@@ -1,0 +1,68 @@
+{
+  "name": "张三",
+  "school": "某某大学",
+  "major": "计算机科学与技术",
+  "education": "本科",
+  "graduation_year": 2026,
+  "target_roles": [
+    "AI应用开发",
+    "数据分析"
+  ],
+  "years_of_experience": 0,
+  "current_status": "在校生",
+  "expectations": {
+    "city": "某市",
+    "salary": {
+      "internship": "面议",
+      "full_time": "面议"
+    },
+    "job_type": "实习/正式皆可",
+    "require_weekend": true,
+    "consider_big_company": false
+  },
+  "skills": {
+    "languages": [
+      "Python",
+      "Java"
+    ],
+    "ai_tools": [
+      "Claude Code",
+      "GitHub Copilot"
+    ],
+    "data_analysis": [
+      "数据清洗",
+      "数据可视化"
+    ],
+    "machine_learning": [
+      "Scikit-learn",
+      "PyTorch"
+    ],
+    "big_data": [
+      "Hadoop",
+      "Hive"
+    ]
+  },
+  "experience": [
+    {
+      "company": "某某科技有限公司",
+      "role": "数据实习生",
+      "period": "2025.6 - 2025.9",
+      "description": "数据采集、清洗与分析，支撑业务决策"
+    }
+  ],
+  "projects": [
+    {
+      "name": "某某数据分析系统",
+      "role": "数据分析",
+      "period": "2025.10 - 2025.12",
+      "description": "构建回归模型实现指标预测，可视化展示结果"
+    }
+  ],
+  "certificates": [
+    "证书示例"
+  ],
+  "highlights": [
+    "亮点示例1",
+    "亮点示例2"
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "search": {
+    "keyword": "AI应用开发",
+    "secondary_keywords": [
+      "数据分析",
+      "AI应用",
+      "大模型应用"
+    ],
+    "city": "<意向城市>",
+    "page_count": 20,
+    "filters": {
+      "experience": "",
+      "education": "",
+      "salary": "",
+      "job_type": ""
+    },
+    "auto_filters_from_resume": true
+  },
+  "ai": {
+    "match_threshold": 60,
+    "over_match_threshold": 80,
+    "temperature": 0.1
+  },
+  "scoring": {
+    "dimensions": [
+      {
+        "name": "技术栈匹配度",
+        "weight": 50,
+        "description": "求职者技能与岗位要求重合度，重合越高分越高",
+        "enabled": true
+      },
+      {
+        "name": "经验要求",
+        "weight": 15,
+        "description": "工作年限要求与求职者经验匹配程度",
+        "enabled": true
+      },
+      {
+        "name": "职能方向",
+        "weight": 15,
+        "description": "职位方向与求职者目标方向匹配度",
+        "enabled": true
+      },
+      {
+        "name": "薪资范围",
+        "weight": 10,
+        "description": "按简历期望薪资（实习/正式）与岗位类型匹配度评分",
+        "enabled": true
+      },
+      {
+        "name": "工作制度",
+        "weight": 10,
+        "description": "是否双休（大小周/单休降分）",
+        "enabled": true
+      }
+    ]
+  },
+  "application": {
+    "max_per_hour": 15,
+    "daily_limit": 50,
+    "delay_range_seconds": [
+      3,
+      8
+    ],
+    "apply_10_pause_minutes": 3
+  },
+  "blacklist": {
+    "enabled": true,
+    "auto_threshold": 30,
+    "temp_days": 30,
+    "outsourcing_keywords": [
+      "劳务派遣",
+      "劳务外包",
+      "外包",
+      "驻场",
+      "外派",
+      "人力外包",
+      "人力派遣"
+    ]
+  },
+  "browser": {
+    "timeout_seconds": 30
+  }
+}

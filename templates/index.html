@@ -1,0 +1,1187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BOSS 直聘 AI 自动投递</title>
+<style>
+  :root {
+    --bg: #f0f2f5;
+    --card: #ffffff;
+    --primary: #1a73e8;
+    --success: #34a853;
+    --warn: #fbbc04;
+    --danger: #ea4335;
+    --text: #202124;
+    --text2: #5f6368;
+    --border: #e0e0e0;
+    --radius: 8px;
+    --shadow: 0 2px 8px rgba(0,0,0,.08);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font: 14px/1.6 -apple-system, "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); padding: 16px;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+
+  /* 头部 */
+  .header {
+    background: var(--card); border-radius: var(--radius);
+    padding: 16px 24px; box-shadow: var(--shadow);
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  .header h1 { font-size: 20px; display: flex; align-items: center; gap: 8px; }
+  .header h1 small { font-size: 13px; color: var(--text2); font-weight: normal; }
+
+  /* 状态指示器 */
+  .status-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 14px; border-radius: 20px; font-weight: 600; font-size: 13px;
+  }
+  .status-badge .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+  }
+  .status-idle { background: #e8eaed; color: var(--text2); }
+  .status-idle .dot { background: #9aa0a6; }
+  .status-running { background: #e6f4ea; color: #1e7e34; }
+  .status-running .dot { background: var(--success); animation: pulse 1.2s infinite; }
+  .status-paused { background: #fef7e0; color: #b57c00; }
+  .status-paused .dot { background: var(--warn); }
+  .status-error { background: #fce8e6; color: #c5221f; }
+  .status-error .dot { background: var(--danger); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  /* 网格布局 */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+  @media(max-width:768px){ .grid-2,.grid-3{grid-template-columns:1fr} }
+
+  /* 卡片 */
+  .card {
+    background: var(--card); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 16px 20px;
+  }
+  .card-title {
+    font-size: 15px; font-weight: 600; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  /* 按钮 */
+  .btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 8px 20px; border: none; border-radius: 6px;
+    font-size: 14px; font-weight: 500; cursor: pointer;
+    transition: all .15s; white-space: nowrap;
+  }
+  .btn:hover { filter: brightness(1.1); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; filter: none; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-success { background: var(--success); color: #fff; }
+  .btn-danger { background: var(--danger); color: #fff; }
+  .btn-warn { background: var(--warn); color: #333; }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn-sm { padding: 4px 12px; font-size: 12px; }
+  .btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* 表单 */
+  .form-group { margin-bottom: 12px; }
+  .form-group label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 3px; }
+  .form-group input, .form-group select {
+    width: 100%; padding: 7px 10px; border: 1px solid var(--border);
+    border-radius: 6px; font-size: 13px;
+  }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .form-actions { margin-top: 8px; }
+  .form-group textarea {
+    width: 100%; padding: 7px 10px; border: 1px solid var(--border);
+    border-radius: 6px; font-size: 13px; font-family: inherit; resize: vertical;
+  }
+
+  /* 统计面板 */
+  .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat-item {
+    text-align: center; padding: 10px; border-radius: 6px;
+    background: #f8f9fa;
+  }
+  .stat-item .num { font-size: 26px; font-weight: 700; line-height: 1.2; }
+  .stat-item .label { font-size: 12px; color: var(--text2); }
+  .stat-green .num { color: var(--success); }
+  .stat-blue .num { color: var(--primary); }
+  .stat-orange .num { color: #e37400; }
+  .stat-red .num { color: var(--danger); }
+
+  /* 待审核列表 */
+  .review-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .review-table th {
+    text-align: left; padding: 8px 6px; font-weight: 600;
+    border-bottom: 2px solid var(--border); font-size: 12px; color: var(--text2);
+  }
+  .review-table td { padding: 8px 6px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+  .review-table .actions { white-space: nowrap; }
+  .badge-score {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 12px; font-weight: 600;
+  }
+  .badge-high { background: #e6f4ea; color: #1e7e34; }
+  .badge-mid { background: #fef7e0; color: #b57c00; }
+  .badge-low { background: #fce8e6; color: #c5221f; }
+  .badge-star { background: #e8f0fe; color: #1a73e8; }
+  .link { color: var(--primary); text-decoration: none; }
+  .link:hover { text-decoration: underline; }
+
+  /* 日志 */
+  .log-box {
+    background: #1e1e2e; color: #cdd6f4; font-family: "Cascadia Code", "Fira Code", monospace;
+    font-size: 12px; padding: 12px; border-radius: 6px;
+    height: 320px; overflow-y: auto; line-height: 1.7;
+  }
+  .log-box .time { color: #6c7086; }
+  .log-box .info { color: #89b4fa; }
+  .log-box .warn { color: #f9e2af; }
+  .log-box .error { color: #f38ba8; }
+
+  /* 模式切换 */
+  .mode-switch {
+    display: inline-flex; border-radius: 6px; overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .mode-switch button {
+    padding: 6px 16px; border: none; cursor: pointer;
+    font-size: 13px; transition: all .15s;
+  }
+  .mode-switch button.active { background: var(--primary); color: #fff; }
+  .mode-switch button:not(.active) { background: #fff; color: var(--text); }
+  .mode-switch button:not(.active):hover { background: #f0f0f0; }
+
+  /* 空状态 */
+  .empty-state { text-align: center; padding: 20px; color: var(--text2); font-size: 13px; }
+
+  /* Toast */
+  .toast {
+    position: fixed; top: 20px; right: 20px; padding: 12px 20px;
+    border-radius: 6px; color: #fff; font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0,0,0,.15); z-index: 9999;
+    transform: translateX(120%); transition: transform .3s;
+  }
+  .toast.show { transform: translateX(0); }
+  .toast-success { background: var(--success); }
+  .toast-error { background: var(--danger); }
+  .toast-info { background: var(--primary); }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- 头部 -->
+  <div class="header">
+    <h1>🚀 BOSS 直聘 AI 自动投递 <small>v3.1</small></h1>
+    <div style="display:flex;align-items:center;gap:10px">
+      <a class="btn btn-outline btn-sm" href="/blacklist" target="_blank" title="查看低质量岗位黑名单（永久/短期/观察 三级，命中直接跳过）">🚫 黑名单</a>
+      <a class="btn btn-outline btn-sm" href="/starred" target="_blank" title="查看历史超预期岗位（AI 评分 ≥ 超预期阈值 自动收藏）">⭐ 超预期岗位</a>
+      <div id="statusBadge" class="status-badge status-idle">
+        <span class="dot"></span>
+        <span id="statusText">就绪</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 网格 -->
+  <div class="grid-3">
+    <!-- 左侧: 配置 + 控制 -->
+    <div>
+      <!-- 控制面板 -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title">🎮 控制面板</div>
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <div class="btn-group">
+            <button class="btn btn-success" id="btnStart" onclick="control('start')">▶️ 启动</button>
+            <button class="btn btn-warn" id="btnPause" onclick="control('pause')" disabled>⏸️ 暂停</button>
+            <button class="btn btn-danger" id="btnStop" onclick="control('stop')" disabled>⏹️ 停止</button>
+          </div>
+          <div style="margin-left:auto">
+            <span style="font-size:12px;color:var(--text2)">运行模式：</span>
+            <div class="mode-switch" id="modeSwitch">
+              <button class="active" data-mode="auto" onclick="setMode('auto')">🤖 全自动</button>
+              <button data-mode="semi" onclick="setMode('semi')">👤 半自动</button>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:8px;font-size:12px;color:var(--text2)">
+          <span id="currentJobInfo">等待启动...</span>
+        </div>
+      </div>
+
+      <!-- 配置面板 -->
+      <div class="card">
+        <div class="card-title">⚙️ 搜索配置
+          <span style="font-size:12px;color:var(--text2);font-weight:normal;margin-left:8px">修改后点击保存</span>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>搜索关键词</label>
+            <input id="cfg_keyword" value="AI应用开发">
+          </div>
+          <div class="form-group">
+            <label>备选关键词（逗号分隔）</label>
+            <input id="cfg_secondary" value="数据分析,AI应用,大模型应用">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>城市</label>
+            <input id="cfg_city" value="">
+          </div>
+          <div class="form-group">
+            <label>搜索页数</label>
+            <input id="cfg_pages" type="number" value="20" min="1" max="50">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>匹配阈值（分）<span id="thresholdVal">60</span></label>
+            <input id="cfg_threshold" type="range" value="60" min="0" max="100"
+                   oninput="document.getElementById('thresholdVal').textContent=this.value">
+          </div>
+          <div class="form-group">
+            <label>每日投递上限</label>
+            <input id="cfg_daily" type="number" value="50" min="1" max="200">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>超预期阈值（分）<span id="overThresholdVal">80</span></label>
+            <input id="cfg_over_threshold" type="range" value="80" min="0" max="100"
+                   oninput="document.getElementById('overThresholdVal').textContent=this.value">
+          </div>
+          <div class="form-group">
+            <label style="color:var(--text2);font-size:12px">&nbsp;</label>
+            <div style="font-size:12px;color:var(--text2);padding:7px 0">⭐ ≥此分的岗位自动收藏至「超预期岗位」页面</div>
+          </div>
+        </div>
+        <div class="form-row" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+          <div class="form-group">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+              <input id="cfg_blacklist_enabled" type="checkbox" checked> 🚫 自动拉黑低质岗位
+            </label>
+            <div style="font-size:12px;color:var(--text2)">外包/名不副实→永久 · 远超简历→短期 · 低分→观察</div>
+          </div>
+          <div class="form-group">
+            <label>低分观察阈值（分）<span id="blacklistThrVal">30</span></label>
+            <input id="cfg_blacklist_thr" type="range" value="30" min="0" max="60"
+                   oninput="document.getElementById('blacklistThrVal').textContent=this.value">
+          </div>
+          <div class="form-group">
+            <label>短期天数</label>
+            <input id="cfg_blacklist_days" type="number" value="30" min="1" max="365">
+          </div>
+        </div>
+        <div class="form-row" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+          <div class="form-group">
+            <label>🎚️ 经验筛选（网页内置，留空=不限）</label>
+            <select id="cfg_filter_exp">
+              <option value="">不限</option>
+              <option>在校/应届</option>
+              <option>经验不限</option>
+              <option>1年以内</option>
+              <option>1-3年</option>
+              <option>3-5年</option>
+              <option>5-10年</option>
+              <option>10年以上</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>🎓 学历筛选</label>
+            <select id="cfg_filter_edu">
+              <option value="">不限</option>
+              <option>大专</option>
+              <option>本科</option>
+              <option>硕士</option>
+              <option>博士</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>💰 薪资筛选</label>
+            <select id="cfg_filter_salary">
+              <option value="">不限</option>
+              <option>3K以下</option>
+              <option>3-5K</option>
+              <option>5-10K</option>
+              <option>10-20K</option>
+              <option>20-50K</option>
+              <option>50K以上</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>🧑‍💼 职位类型</label>
+            <select id="cfg_filter_type">
+              <option value="">不限</option>
+              <option>全职</option>
+              <option>兼职</option>
+              <option>实习</option>
+            </select>
+          </div>
+        </div>
+        <div style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer">
+            <input type="checkbox" id="cfg_auto_filters" checked>
+            🤖 智能筛选：未手动设置的筛选项自动从简历推导（如 在校/应届、本科、实习）
+          </label>
+          <div style="font-size:12px;color:var(--text2);margin-top:4px">
+            📜 引擎会<b>停留在搜索页</b>，通过<b>左侧列表下拉滚动</b>加载后续岗位，而非只取第一页。
+          </div>
+        </div>
+        <div class="form-row" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+          <div style="font-size:12px;color:var(--text2);background:#e8f5e9;padding:8px 12px;border-radius:4px;width:100%">
+            🛡️ 使用 <strong>KIMI Webbridge</strong> 控制真实浏览器，零自动化检测。<br>
+            💡 操作前请先打开 Edge 浏览器，登录 BOSS 直聘。
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary btn-sm" onclick="saveConfig()">💾 保存配置</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右侧: 统计 -->
+    <div class="card">
+      <div class="card-title">📊 运行统计</div>
+      <div class="stats-grid">
+        <div class="stat-item stat-blue">
+          <div class="num" id="statTotal">0</div>
+          <div class="label">共处理</div>
+        </div>
+        <div class="stat-item stat-green">
+          <div class="num" id="statApplied">0</div>
+          <div class="label">✅ 已投递</div>
+        </div>
+        <div class="stat-item stat-orange">
+          <div class="num" id="statSkipped">0</div>
+          <div class="label">⏭️ 已跳过</div>
+        </div>
+        <div class="stat-item stat-red">
+          <div class="num" id="statFailed">0</div>
+          <div class="label">❌ 失败</div>
+        </div>
+      </div>
+      <div style="margin-top:12px;font-size:12px;color:var(--text2)">
+        ⏱️ 耗时：<span id="statElapsed">0秒</span>
+        &nbsp;|&nbsp; 模式：<span id="statMode">全自动</span>
+        &nbsp;|&nbsp; 待审核：<span id="statPending">0</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 评分维度 + 简历管理 -->
+  <div class="grid-2" style="margin-top:16px">
+    <!-- 评分维度 -->
+    <div class="card">
+      <div class="card-title">🎯 评分维度
+        <span style="font-size:12px;color:var(--text2);font-weight:normal;margin-left:8px">AI 按以下维度加权评分，保存后即时生效</span>
+      </div>
+      <div id="scoringArea"><div class="empty-state">加载中...</div></div>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-outline btn-sm" onclick="addDimension()">＋ 添加维度</button>
+        <button class="btn btn-primary btn-sm" onclick="saveScoring()">💾 保存评分</button>
+      </div>
+      <div style="margin-top:8px;font-size:12px;color:var(--text2)">
+        💡 权重合计建议 100%。取消勾选「启用」即可让该维度不参与评分。
+      </div>
+    </div>
+
+    <!-- 简历管理 -->
+    <div class="card">
+      <div class="card-title">📝 简历管理
+        <span style="font-size:12px;color:var(--text2);font-weight:normal;margin-left:8px">增删改查专业技能 / 经历 / 项目，AI 读取最新内容评分</span>
+      </div>
+      <div class="mode-switch" id="resumeTabs" style="margin-bottom:10px">
+        <button class="active" data-tab="skills" onclick="switchResumeTab('skills')">🛠️ 技能</button>
+        <button data-tab="experience" onclick="switchResumeTab('experience')">💼 经历</button>
+        <button data-tab="projects" onclick="switchResumeTab('projects')">📁 项目</button>
+        <button data-tab="other" onclick="switchResumeTab('other')">🎯 其他</button>
+      </div>
+      <div id="resumeArea"><div class="empty-state">加载中...</div></div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="saveResume()">💾 保存简历</button>
+      </div>
+      <!-- 📎 v3.2 简历附件上传 -->
+      <div style="margin-top:12px;padding:10px 12px;border:1px dashed var(--border);border-radius:8px">
+        <div style="font-size:13px;color:var(--text2);margin-bottom:8px">📎 简历附件（.docx / .pdf）— AI 评分时合并补充到结构化简历</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="file" id="resumeFileInput" accept=".docx,.pdf" style="flex:1;min-width:200px;font-size:13px">
+          <button class="btn btn-sm" onclick="uploadResume(this)">📤 上传</button>
+          <button class="btn btn-sm" id="clearUploadBtn" onclick="clearUploadResume()" style="display:none">🗑 删除附件</button>
+        </div>
+        <div id="resumeUploadStatus" style="font-size:12px;color:var(--text2);margin-top:8px">未上传附件</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 待人工审核 -->
+  <div class="card" style="margin-top:16px">
+    <div class="card-title">🤔 待人工审核
+      <span id="pendingCount" style="font-size:12px;color:var(--text2);font-weight:normal">(0 项)</span>
+      <span id="pendingWarn" style="display:none;margin-left:8px;font-size:12px;color:#c5221f;font-weight:600">&#x26A0;&#xFE0F; 已达上限，引擎已停止</span>
+    </div>
+    <div id="reviewArea">
+      <div class="empty-state">&#x2022; 半自动模式下 AI 持续搜索，岗位会自动加入此列表<br>&#x2022; 你可随时审核投递或跳过，引擎自动执行<br>&#x2022; 待审核超 50 条时引擎自动停止（防数据泄露）</div>
+    </div>
+  </div>
+
+  <!-- 运行日志 -->
+  <div class="card" style="margin-top:16px">
+    <div class="card-title">📜 运行日志
+      <span style="font-size:12px;color:var(--text2);font-weight:normal;margin-left:8px">实时更新</span>
+      <button class="btn btn-outline btn-sm" style="margin-left:auto" onclick="clearLogs()">清空</button>
+    </div>
+    <div class="log-box" id="logBox">
+      <div><span class="time">----</span> <span>启动控制面板，等待操作...</span></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ==================== 全局状态 ====================
+let mode = 'auto';
+
+// ==================== Toast 提示 ====================
+function showToast(msg, type = 'info') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast toast-' + type;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// ==================== 控制命令 ====================
+async function control(action) {
+  try {
+    const r = await fetch(`/api/control/${action}`, { method: 'POST' });
+    const d = await r.json();
+    if (d.success) {
+      showToast(d.message, 'success');
+    } else {
+      showToast(d.message || d.error || '操作失败', 'error');
+    }
+  } catch(e) {
+    showToast('请求失败: ' + e.message, 'error');
+  }
+}
+
+// ==================== 设置运行模式 ====================
+async function setMode(newMode) {
+  try {
+    const r = await fetch('/api/control/mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: newMode }),
+    });
+    const d = await r.json();
+    if (d.success) {
+      mode = newMode;
+      document.querySelectorAll('#modeSwitch button').forEach(b => {
+        b.classList.toggle('active', b.dataset.mode === newMode);
+      });
+      document.getElementById('statMode').textContent = newMode === 'auto' ? '全自动' : '半自动';
+      showToast(`已切换至${newMode === 'auto' ? '全自动' : '半自动'}模式`, 'info');
+    }
+  } catch(e) {
+    showToast('设置模式失败: ' + e.message, 'error');
+  }
+}
+
+// ==================== 保存配置 ====================
+async function saveConfig() {
+  const conf = {
+    search: {
+      keyword: document.getElementById('cfg_keyword').value.trim(),
+      secondary_keywords: document.getElementById('cfg_secondary').value.split(',').map(s => s.trim()).filter(Boolean),
+      city: document.getElementById('cfg_city').value.trim(),
+      page_count: parseInt(document.getElementById('cfg_pages').value) || 5,
+      filters: {
+        experience: document.getElementById('cfg_filter_exp').value,
+        education: document.getElementById('cfg_filter_edu').value,
+        salary: document.getElementById('cfg_filter_salary').value,
+        job_type: document.getElementById('cfg_filter_type').value,
+      },
+      auto_filters_from_resume: document.getElementById('cfg_auto_filters').checked,
+    },
+    ai: {
+      match_threshold: parseInt(document.getElementById('cfg_threshold').value) || 60,
+      over_match_threshold: parseInt(document.getElementById('cfg_over_threshold').value) || 80,
+    },
+    application: {
+      daily_limit: parseInt(document.getElementById('cfg_daily').value) || 50,
+    },
+    blacklist: {
+      enabled: document.getElementById('cfg_blacklist_enabled').checked,
+      auto_threshold: parseInt(document.getElementById('cfg_blacklist_thr').value) || 30,
+      temp_days: parseInt(document.getElementById('cfg_blacklist_days').value) || 30,
+    },
+  };
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(conf),
+    });
+    const d = await r.json();
+    if (d.success) {
+      showToast('✅ 配置已保存', 'success');
+    } else {
+      showToast('❌ 保存失败: ' + (d.error || '未知错误'), 'error');
+    }
+  } catch(e) {
+    showToast('保存失败: ' + e.message, 'error');
+  }
+}
+
+// ==================== 人工审核决策 ====================
+// blacklist=true 时不投递/跳过，直接拉黑该岗位；level: permanent / temporary
+async function reviewDecide(jobId, shouldApply, blacklist = false, level = 'permanent') {
+  const label = blacklist
+    ? (level === 'temporary' ? '短期拉黑' : '拉黑')
+    : (shouldApply ? '投递' : '跳过');
+  try {
+    const r = await fetch('/api/reviews/decide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        job_id: jobId,
+        decision: { should_apply: shouldApply, blacklist: blacklist, level: level },
+      }),
+    });
+    const d = await r.json();
+    if (d.success) {
+      showToast(`✅ 已${label}该岗位`, 'success');
+    }
+  } catch(e) {
+    showToast('操作失败: ' + e.message, 'error');
+  }
+}
+
+// ==================== 清空日志 ====================
+function clearLogs() {
+  document.getElementById('logBox').innerHTML =
+    '<div><span class="time">----</span> <span>日志已清空</span></div>';
+}
+
+// ==================== 更新 UI ====================
+function updateStatus(payload) {
+  const st = payload.status;
+  const badge = document.getElementById('statusBadge');
+  const text = document.getElementById('statusText');
+
+  // 状态样式
+  badge.className = 'status-badge status-' + st;
+  const labels = { idle: '就绪', running: '运行中', paused: '已暂停', stopping: '正在停止...', error: '出错' };
+  text.textContent = payload.status_msg || labels[st] || st;
+
+  // 按钮状态
+  const isRunning = st === 'running';
+  const isPaused = st === 'paused';
+  const isIdle = st === 'idle' || st === 'error';
+  document.getElementById('btnStart').disabled = !isIdle;
+  document.getElementById('btnPause').disabled = !isRunning && !isPaused;
+  document.getElementById('btnPause').textContent = isPaused ? '▶️ 继续' : '⏸️ 暂停';
+  document.getElementById('btnStop').disabled = isIdle;
+
+  // 统计
+  const stats = payload.stats || {};
+  document.getElementById('statTotal').textContent = stats.total || 0;
+  document.getElementById('statApplied').textContent = stats.applied || 0;
+  document.getElementById('statSkipped').textContent = stats.skipped || 0;
+  document.getElementById('statFailed').textContent = stats.failed || 0;
+  document.getElementById('statElapsed').textContent = payload.elapsed || '0秒';
+  document.getElementById('statPending').textContent = payload.pending_reviews || 0;
+
+  // 当前岗位
+  const job = payload.current_job;
+  if (job) {
+    const parts = [job.title || ''];
+    if (job.company) parts.push(job.company);
+    if (job.company_size) parts.push(job.company_size);
+    if (job.financing) parts.push(job.financing);
+    if (job.salary) parts.push(job.salary);
+    document.getElementById('currentJobInfo').textContent = `当前处理: ${parts.join(' · ')}`;
+  } else if (isIdle) {
+    document.getElementById('currentJobInfo').textContent = '等待启动...';
+  }
+
+  // 待审核数
+  document.getElementById('pendingCount').textContent = `(${payload.pending_reviews || 0} 项)`;
+
+  // 待审核超限警告
+  const warnEl = document.getElementById('pendingWarn');
+  if (payload.pending_reviews >= 50) {
+    warnEl.style.display = 'inline';
+  } else {
+    warnEl.style.display = 'none';
+  }
+
+  // 配置同步（仅首次加载）
+  if (payload.config) {
+    const c = payload.config;
+    if (c.search) {
+      const kw = document.getElementById('cfg_keyword');
+      if (!kw.dataset.loaded) {
+        kw.value = c.search.keyword || '';
+        document.getElementById('cfg_city').value = c.search.city || '';
+        document.getElementById('cfg_pages').value = c.search.page_count || 5;
+        if (c.search.secondary_keywords) {
+          document.getElementById('cfg_secondary').value = c.search.secondary_keywords.join(',');
+        }
+        // 网页内置筛选
+        const f = c.search.filters || {};
+        document.getElementById('cfg_filter_exp').value = f.experience || '';
+        document.getElementById('cfg_filter_edu').value = f.education || '';
+        document.getElementById('cfg_filter_salary').value = f.salary || '';
+        document.getElementById('cfg_filter_type').value = f.job_type || '';
+        if (c.search.auto_filters_from_resume !== undefined) {
+          document.getElementById('cfg_auto_filters').checked = !!c.search.auto_filters_from_resume;
+        }
+        kw.dataset.loaded = '1';
+      }
+    }
+    if (c.ai) {
+      const thr = document.getElementById('cfg_threshold');
+      if (!thr.dataset.loaded) {
+        thr.value = c.ai.match_threshold || 60;
+        document.getElementById('thresholdVal').textContent = thr.value;
+        thr.dataset.loaded = '1';
+      }
+      const overThr = document.getElementById('cfg_over_threshold');
+      if (!overThr.dataset.loaded) {
+        overThr.value = c.ai.over_match_threshold || 80;
+        document.getElementById('overThresholdVal').textContent = overThr.value;
+        overThr.dataset.loaded = '1';
+      }
+    }
+    if (c.application && !document.getElementById('cfg_daily').dataset.loaded) {
+      document.getElementById('cfg_daily').value = c.application.daily_limit || 50;
+      document.getElementById('cfg_daily').dataset.loaded = '1';
+    }
+    if (c.blacklist) {
+      const bl = c.blacklist;
+      const blEnabled = document.getElementById('cfg_blacklist_enabled');
+      if (!blEnabled.dataset.loaded) {
+        blEnabled.checked = bl.enabled !== false;
+        blEnabled.dataset.loaded = '1';
+      }
+      const blThr = document.getElementById('cfg_blacklist_thr');
+      if (!blThr.dataset.loaded) {
+        blThr.value = bl.auto_threshold != null ? bl.auto_threshold : 30;
+        document.getElementById('blacklistThrVal').textContent = blThr.value;
+        blThr.dataset.loaded = '1';
+      }
+      const blDays = document.getElementById('cfg_blacklist_days');
+      if (!blDays.dataset.loaded) {
+        blDays.value = bl.temp_days || 30;
+        blDays.dataset.loaded = '1';
+      }
+    }
+  }
+}
+
+// ==================== 更新日志 ====================
+function appendLogs(logs) {
+  const box = document.getElementById('logBox');
+  if (!logs || logs.length === 0) return;
+  for (const log of logs) {
+    const div = document.createElement('div');
+    div.innerHTML = `<span class="time">${escapeHtml(log.time)}</span> <span class="${log.level}">${escapeHtml(log.message)}</span>`;
+    box.appendChild(div);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+function escapeHtml(text) {
+  const d = document.createElement('div');
+  d.textContent = text;
+  return d.innerHTML;
+}
+
+// ==================== 更新待审核列表 ====================
+async function refreshReviews() {
+  try {
+    const r = await fetch('/api/reviews');
+    const reviews = await r.json();
+    const area = document.getElementById('reviewArea');
+    const count = document.getElementById('pendingCount');
+
+    count.textContent = `(${reviews.length} 项)`;
+
+    if (reviews.length === 0) {
+      area.innerHTML = '<div class="empty-state">暂无待审核项 | '
+        + (mode === 'auto' ? '当前为全自动模式，AI 直接决定投递' : '等待 AI 分析完成...')
+        + '</div>';
+      return;
+    }
+
+    // ⭐ v2.6：审核表格展示 岗位名称/公司名称/薪资/学历要求/工作经验/匹配度 等字段，
+    // 方便人工快速判断是否投递（之前岗位名误显示为工作经验要求的问题已修复）
+    // ⭐ v3.0：新增 公司规模/融资上市、超预期标记、BOSS 网址链接
+    let html = `<div style="overflow-x:auto">
+      <table class="review-table" style="min-width:1100px">
+        <tr>
+          <th>岗位名称</th><th>公司名称</th><th>薪资</th>
+          <th>学历要求</th><th>工作经验</th><th>匹配度</th><th>AI 建议</th><th>操作</th>
+        </tr>`;
+    for (const r of reviews) {
+      const score = r.match_score || 0;
+      const cls = score >= 70 ? 'badge-high' : score >= 40 ? 'badge-mid' : 'badge-low';
+      const isOver = r.match_level === '超预期';
+      const compDetails = [];
+      if (r.company_size) compDetails.push(escapeHtml(r.company_size));
+      if (r.listed === true) compDetails.push('已上市');
+      else if (r.listed === false) compDetails.push('未上市');
+      else if (r.financing) compDetails.push(escapeHtml(r.financing));
+      if (r.industry) compDetails.push(escapeHtml(r.industry));
+      html += `<tr>
+        <td><strong>${escapeHtml(r.job_title || '未知')}</strong>${r.city ? `<br><small>${escapeHtml(r.city)}</small>` : ''}</td>
+        <td>${escapeHtml(r.company || '-')}${compDetails.length ? `<br><small>${compDetails.join(' · ')}</small>` : ''}</td>
+        <td>${escapeHtml(r.salary || '-')}</td>
+        <td>${escapeHtml(r.education || '-')}</td>
+        <td>${escapeHtml(r.experience || '-')}</td>
+        <td><span class="badge-score ${isOver ? 'badge-star' : cls}">${score}分</span>${isOver ? '<br><small style="color:#1a73e8;font-weight:600">⭐ 超预期</small>' : ''}</td>
+        <td>${r.ai_decision === '投递' ? '✅ 投递' : '⏭️ 跳过'}<br><small>${escapeHtml(r.reason || '')}</small></td>
+        <td class="actions">
+          ${r.url ? `<a class="btn btn-outline btn-sm" href="${escapeHtml(r.url)}" target="_blank" rel="noopener" title="在 BOSS 中查看">🔗 BOSS</a> ` : ''}
+          <button class="btn btn-success btn-sm" onclick="reviewDecide('${r.job_id}', true)">✅ 投递</button>
+          <button class="btn btn-outline btn-sm" onclick="reviewDecide('${r.job_id}', false)">⏭️ 跳过</button>
+          <button class="btn btn-danger btn-sm" onclick="reviewDecide('${r.job_id}', false, true, 'permanent')" title="永久拉黑：下次遇到直接跳过，不再读 JD">🚫 拉黑</button>
+          <button class="btn btn-outline btn-sm" onclick="reviewDecide('${r.job_id}', false, true, 'temporary')" title="短期拉黑：到期自动解除，未来可重估">⏳ 短期</button>
+        </td>
+      </tr>`;
+    }
+    html += '</table></div>';
+    area.innerHTML = html;
+  } catch(e) {
+    // 忽略网络错误（频繁轮询时正常）
+  }
+}
+
+// ==================== 评分维度管理 ====================
+let scoringData = [];
+
+function renderScoring() {
+  const area = document.getElementById('scoringArea');
+  if (!scoringData.length) {
+    area.innerHTML = '<div class="empty-state">暂无评分维度，点击「添加维度」创建</div>';
+    return;
+  }
+  let html = '';
+  scoringData.forEach((d, i) => {
+    html += `<div style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;background:#fafbfc">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text2);white-space:nowrap;cursor:pointer">
+          <input type="checkbox" ${d.enabled ? 'checked' : ''} onchange="scoringData[${i}].enabled=this.checked">启用
+        </label>
+        <input style="flex:1;min-width:0;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:13px"
+               value="${escapeHtml(d.name)}" placeholder="维度名称（如：技术栈匹配度）"
+               oninput="scoringData[${i}].name=this.value">
+        <input type="number" min="0" max="100" style="width:60px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:13px"
+               value="${d.weight}" title="权重（%）"
+               oninput="scoringData[${i}].weight=parseInt(this.value)||0">
+        <span style="font-size:12px;color:var(--text2)">%</span>
+        <button class="btn btn-danger btn-sm" title="删除维度" onclick="removeDimension(${i})">✕</button>
+      </div>
+      <input style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px"
+             value="${escapeHtml(d.description)}" placeholder="维度说明（AI 如何据此打分）"
+             oninput="scoringData[${i}].description=this.value">
+    </div>`;
+  });
+  area.innerHTML = html;
+}
+
+function addDimension() {
+  scoringData.push({ name: '新维度', weight: 10, description: '', enabled: true });
+  renderScoring();
+}
+
+function removeDimension(i) {
+  scoringData.splice(i, 1);
+  renderScoring();
+}
+
+function loadScoring(scoring) {
+  const dims = (scoring && scoring.dimensions) || [];
+  scoringData = dims.map(d => ({
+    name: d.name || '',
+    weight: d.weight || 0,
+    description: d.description || '',
+    enabled: d.enabled !== false,
+  }));
+  renderScoring();
+}
+
+async function saveScoring() {
+  const dims = scoringData.map(d => ({
+    name: (d.name || '').trim() || '未命名维度',
+    weight: d.weight || 0,
+    description: (d.description || '').trim(),
+    enabled: d.enabled !== false,
+  }));
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scoring: { dimensions: dims } }),
+    });
+    const d = await r.json();
+    showToast(d.success ? '✅ 评分维度已保存' : '❌ 保存失败: ' + (d.error || '未知错误'),
+              d.success ? 'success' : 'error');
+  } catch(e) {
+    showToast('保存失败: ' + e.message, 'error');
+  }
+}
+
+// ==================== 简历管理 ====================
+let resumeData = {};
+let skillsData = [];   // [{name, items}]
+let expData = [];      // [{company, role, period, description}]
+let projData = [];     // [{name, role, period, description}]
+let resumeTab = 'skills';
+
+function switchResumeTab(tab) {
+  resumeTab = tab;
+  document.querySelectorAll('#resumeTabs button').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  renderResume();
+}
+
+function renderResume() {
+  const area = document.getElementById('resumeArea');
+  if (resumeTab === 'skills') {
+    renderResumeSkills(area);
+  } else if (resumeTab === 'experience') {
+    renderResumeExp(area);
+  } else if (resumeTab === 'projects') {
+    renderResumeProj(area);
+  } else {
+    renderResumeOther(area);
+  }
+}
+
+function renderResumeSkills(area) {
+  let html = '';
+  if (!skillsData.length) {
+    html = '<div class="empty-state">暂无技能，点击下方「添加技能分类」</div>';
+  }
+  skillsData.forEach((s, i) => {
+    html += `<div style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;background:#fafbfc">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+        <span style="font-size:12px;color:var(--text2);white-space:nowrap">分类</span>
+        <input style="flex:1;min-width:0;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px"
+               value="${escapeHtml(s.name)}" placeholder="分类名（如：languages）"
+               oninput="skillsData[${i}].name=this.value">
+        <button class="btn btn-danger btn-sm" onclick="removeSkill(${i})">删除</button>
+      </div>
+      <input style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px"
+             value="${escapeHtml(s.items)}" placeholder="技能项，用逗号分隔（如：Python, Java）"
+             oninput="skillsData[${i}].items=this.value">
+    </div>`;
+  });
+  html += '<button class="btn btn-outline btn-sm" onclick="addSkill()">＋ 添加技能分类</button>';
+  area.innerHTML = html;
+}
+
+function addSkill() {
+  skillsData.push({ name: '新分类', items: '' });
+  renderResume();
+}
+
+function removeSkill(i) {
+  skillsData.splice(i, 1);
+  renderResume();
+}
+
+function renderResumeExp(area) {
+  let html = '';
+  if (!expData.length) {
+    html = '<div class="empty-state">暂无实习/工作经历，点击下方「添加经历」</div>';
+  }
+  expData.forEach((e, i) => {
+    html += `<div style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;background:#fafbfc">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+        <input style="flex:1;min-width:0;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px"
+               value="${escapeHtml(e.company)}" placeholder="公司"
+               oninput="expData[${i}].company=this.value">
+        <input style="flex:1;min-width:0;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px"
+               value="${escapeHtml(e.role)}" placeholder="职位"
+               oninput="expData[${i}].role=this.value">
+        <input style="width:150px;min-width:0;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px"
+               value="${escapeHtml(e.period)}" placeholder="时间（如 2026.4-2026.7）"
+               oninput="expData[${i}].period=this.value">
+        <button class="btn btn-danger btn-sm" onclick="removeExp(${i})">删除</button>
+      </div>
+      <input style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px"
+             value="${escapeHtml(e.description)}" placeholder="工作内容描述"
+             oninput="expData[${i}].description=this.value">
+    </div>`;
+  });
+  html += '<button class="btn btn-outline btn-sm" onclick="addExp()">＋ 添加经历</button>';
+  area.innerHTML = html;
+}
+
+function addExp() {
+  expData.push({ company: '', role: '', period: '', description: '' });
+  renderResume();
+}
+
+function removeExp(i) {
+  expData.splice(i, 1);
+  renderResume();
+}
+
+function renderResumeProj(area) {
+  let html = '';
+  if (!projData.length) {
+    html = '<div class="empty-state">暂无项目经历，点击下方「添加项目」</div>';
+  }
+  projData.forEach((p, i) => {
+    html += `<div style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;background:#fafbfc">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+        <input style="flex:1.2;min-width:0;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px"
+               value="${escapeHtml(p.name)}" placeholder="项目名称"
+               oninput="projData[${i}].name=this.value">
+        <input style="flex:1;min-width:0;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px"
+               value="${escapeHtml(p.role)}" placeholder="你的角色"
+               oninput="projData[${i}].role=this.value">
+        <input style="width:140px;min-width:0;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px"
+               value="${escapeHtml(p.period)}" placeholder="时间"
+               oninput="projData[${i}].period=this.value">
+        <button class="btn btn-danger btn-sm" onclick="removeProj(${i})">删除</button>
+      </div>
+      <input style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px"
+             value="${escapeHtml(p.description)}" placeholder="项目描述"
+             oninput="projData[${i}].description=this.value">
+    </div>`;
+  });
+  html += '<button class="btn btn-outline btn-sm" onclick="addProj()">＋ 添加项目</button>';
+  area.innerHTML = html;
+}
+
+function addProj() {
+  projData.push({ name: '', role: '', period: '', description: '' });
+  renderResume();
+}
+
+function removeProj(i) {
+  projData.splice(i, 1);
+  renderResume();
+}
+
+function renderResumeOther(area) {
+  const tgt = (resumeData.target_roles || []).join(',');
+  const hl = (resumeData.highlights || []).join('\n');
+  const cert = (resumeData.certificates || []).join('\n');
+  area.innerHTML = `
+    <div class="form-group">
+      <label>🎯 目标岗位（逗号分隔）</label>
+      <input value="${escapeHtml(tgt)}"
+             oninput="resumeData.target_roles=this.value.split(/[,，]/).map(s=>s.trim()).filter(Boolean)">
+    </div>
+    <div class="form-group">
+      <label>⭐ 突出成果（每行一条）</label>
+      <textarea rows="3"
+        oninput="resumeData.highlights=this.value.split('\\n').map(s=>s.trim()).filter(Boolean)">${escapeHtml(hl)}</textarea>
+    </div>
+    <div class="form-group">
+      <label>🏅 证书（每行一条）</label>
+      <textarea rows="3"
+        oninput="resumeData.certificates=this.value.split('\\n').map(s=>s.trim()).filter(Boolean)">${escapeHtml(cert)}</textarea>
+    </div>`;
+}
+
+function loadResume(resume) {
+  resumeData = resume || {};
+  skillsData = Object.entries(resumeData.skills || {}).map(([name, items]) => ({
+    name, items: (items || []).join('，'),
+  }));
+  expData = (resumeData.experience || []).map(e => ({
+    company: e.company || '', role: e.role || '', period: e.period || '', description: e.description || '',
+  }));
+  projData = (resumeData.projects || []).map(p => ({
+    name: p.name || '', role: p.role || '', period: p.period || '', description: p.description || '',
+  }));
+  renderResume();
+}
+
+async function saveResume() {
+  const skillsObj = {};
+  skillsData.forEach(s => {
+    const items = (s.items || '').split(/[,，]/).map(x => x.trim()).filter(Boolean);
+    if (s.name.trim()) skillsObj[s.name.trim()] = items;
+  });
+  const resume = {
+    target_roles: resumeData.target_roles || [],
+    skills: skillsObj,
+    experience: expData.map(e => ({
+      company: e.company.trim(), role: e.role.trim(), period: e.period.trim(), description: e.description.trim(),
+    })).filter(e => e.company || e.role || e.description),
+    projects: projData.map(p => ({
+      name: p.name.trim(), role: p.role.trim(), period: p.period.trim(), description: p.description.trim(),
+    })).filter(p => p.name || p.role || p.description),
+    highlights: resumeData.highlights || [],
+    certificates: resumeData.certificates || [],
+  };
+  try {
+    const r = await fetch('/api/resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(resume),
+    });
+    const d = await r.json();
+    showToast(d.success ? '✅ 简历已保存，AI 将读取最新内容' : '❌ 保存失败: ' + (d.error || '未知错误'),
+              d.success ? 'success' : 'error');
+  } catch(e) {
+    showToast('保存失败: ' + e.message, 'error');
+  }
+}
+
+// ==================== 📎 简历附件上传（v3.2） ====================
+function fmtSize(bytes) {
+  if (!bytes && bytes !== 0) return '';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function renderUploadStatus(u) {
+  const statusEl = document.getElementById('resumeUploadStatus');
+  const clearBtn = document.getElementById('clearUploadBtn');
+  if (!u) {
+    statusEl.textContent = '未上传附件（AI 仅使用简历管理中的结构化信息）';
+    clearBtn.style.display = 'none';
+    return;
+  }
+  const truncated = u.truncated ? '（过长已截断）' : '';
+  statusEl.textContent =
+    `${u.filename} · ${(u.format || '').toUpperCase()} · ${fmtSize(u.size_bytes)} · ${u.text_length} 字${truncated} · 上传于 ${u.uploaded_at}`;
+  clearBtn.style.display = 'inline-block';
+}
+
+async function loadUploadStatus() {
+  try {
+    const r = await fetch('/api/resume/upload');
+    const d = await r.json();
+    renderUploadStatus(d.upload);
+  } catch(e) { /* 状态加载失败不阻塞 */ }
+}
+
+async function uploadResume(btn) {
+  const input = document.getElementById('resumeFileInput');
+  const file = input.files && input.files[0];
+  if (!file) { showToast('请先选择 .docx 或 .pdf 简历文件', 'error'); return; }
+  const fd = new FormData();
+  fd.append('file', file);
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/resume/upload', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (d.success) {
+      showToast('✅ 简历附件已上传，AI 将按新简历评分', 'success');
+      renderUploadStatus(d.upload);
+      input.value = '';
+    } else {
+      showToast('❌ 上传失败: ' + (d.error || '未知错误'), 'error');
+    }
+  } catch(e) {
+    showToast('上传失败: ' + e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function clearUploadResume() {
+  try {
+    const r = await fetch('/api/resume/upload', { method: 'DELETE' });
+    const d = await r.json();
+    if (d.success) {
+      showToast('🗑 已删除简历附件', 'success');
+      renderUploadStatus(null);
+    } else {
+      showToast('删除失败: ' + (d.error || '未知错误'), 'error');
+    }
+  } catch(e) {
+    showToast('删除失败: ' + e.message, 'error');
+  }
+}
+
+// ==================== SSE 连接 ====================
+function connectSSE() {
+  const evtSource = new EventSource('/api/events');
+  evtSource.onmessage = function(event) {
+    try {
+      const payload = JSON.parse(event.data);
+      if (payload.type === 'status') {
+        updateStatus(payload.data);
+      } else if (payload.type === 'logs') {
+        appendLogs(payload.data);
+      }
+    } catch(e) { /* ignore parse errors */ }
+  };
+  evtSource.onerror = function() {
+    // 断线重连
+    setTimeout(connectSSE, 2000);
+  };
+}
+
+// ==================== 初始化 ====================
+async function init() {
+  // 加载初始状态
+  try {
+    const r = await fetch('/api/status');
+    const payload = await r.json();
+    updateStatus(payload);
+    // 加载评分维度
+    if (payload.config && payload.config.scoring) {
+      loadScoring(payload.config.scoring);
+    }
+    // 加载简历（技能/经历/项目）
+    try {
+      const rr = await fetch('/api/resume');
+      loadResume(await rr.json());
+    } catch(e) { /* 简历加载失败不阻塞 */ }
+    // 加载简历附件状态（v3.2）
+    loadUploadStatus();
+    if (payload.config) {
+      // 同步模式
+      if (payload.mode) {
+        mode = payload.mode;
+        document.querySelectorAll('#modeSwitch button').forEach(b => {
+          b.classList.toggle('active', b.dataset.mode === payload.mode);
+        });
+      }
+    }
+    // 加载初始日志
+    const logR = await fetch('/api/logs?n=100');
+    const logs = await logR.json();
+    if (logs.length > 0) {
+      document.getElementById('logBox').innerHTML = '';
+      appendLogs(logs);
+    }
+  } catch(e) {
+    showToast('连接服务器失败: ' + e.message, 'error');
+  }
+
+  // 连接 SSE
+  connectSSE();
+
+  // 定时刷新审核列表
+  setInterval(refreshReviews, 2000);
+}
+
+init();
+</script>
+</body>
+</html>
