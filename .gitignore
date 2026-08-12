@@ -19,6 +19,9 @@ uploads/
 # 残留的独立 git 仓库（勿提交）
 boos自动回复/
 
+# 本机个人启动脚本（含 conda 环境路径，不提交；使用者按 README 用 python app.py）
+启动控制面板.bat
+
 # Python
 __pycache__/
 *.pyc
