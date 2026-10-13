@@ -230,11 +230,11 @@
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label>城市</label>
-            <input id="cfg_city" value="">
+            <label>城市（逗号分隔，留空不限）</label>
+            <input id="cfg_city" value="" placeholder="例如：北京，石家庄，天津">
           </div>
           <div class="form-group">
-            <label>搜索页数</label>
+            <label>搜索总页数（多城市平均分配）</label>
             <input id="cfg_pages" type="number" value="20" min="1" max="50">
           </div>
         </div>
@@ -515,7 +515,7 @@ async function saveConfig() {
   const conf = {
     search: {
       keyword: document.getElementById('cfg_keyword').value.trim(),
-      secondary_keywords: document.getElementById('cfg_secondary').value.split(',').map(s => s.trim()).filter(Boolean),
+      secondary_keywords: document.getElementById('cfg_secondary').value.split(/[,，]/).map(s => s.trim()).filter(Boolean),
       city: document.getElementById('cfg_city').value.trim(),
       page_count: parseInt(document.getElementById('cfg_pages').value) || 5,
       filters: {
@@ -548,7 +548,7 @@ async function saveConfig() {
     });
     const d = await r.json();
     if (d.success) {
-      showToast('✅ 配置已保存', 'success');
+      showToast('✅ 已保存；搜索范围与匹配阈值下次启动生效，沟通额度即时生效', 'success');
     } else {
       showToast('❌ 保存失败: ' + (d.error || '未知错误'), 'error');
     }

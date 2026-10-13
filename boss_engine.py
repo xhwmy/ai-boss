@@ -2,6 +2,7 @@
 BOSS 直聘后台引擎 — 可控制/可暂停/支持人工干预
 """
 
+import copy
 import json
 import threading
 import time
@@ -19,6 +20,7 @@ from config import (
     validate_config,
 )
 from browser import BossBrowser
+from city_search import page_allocations, resolve_city_targets
 from application_ledger import ApplicationLedger
 from submission import SubmissionWorkflow, greeting_for, RESUME_NAME
 from analyzer import JDAnalyzer
@@ -181,14 +183,16 @@ class BossEngine:
     # ==================== 配置管理 ====================
 
     def update_config(self, new_config: dict):
-        """运行时更新配置（引擎会应用最新配置）"""
+        """保存配置；新搜索条件由下次启动的搜索循环读取。"""
         with self._lock:
             # 保存到文件
             config_path = ROOT_DIR / "config.json"
-            merged = dict(self._config)
+            merged = copy.deepcopy(self._config)
             for section in ["search", "ai", "application", "browser", "scoring", "blacklist"]:
                 if section in new_config:
                     merged[section].update(new_config[section])
+            targets = resolve_city_targets(merged["search"].get("city", ""))
+            page_allocations(merged["search"].get("page_count", 5), len(targets))
             self._config = merged
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(merged, f, ensure_ascii=False, indent=2)
@@ -272,9 +276,9 @@ class BossEngine:
 
     def _wait_for_quota(self) -> bool:
         """按已确认发送的持久化记录限制每天和每小时联系量。"""
-        app_cfg = self._config["application"]
         announced = ""
         while not self._stop_event.is_set():
+            app_cfg = self._config["application"]
             if not self._pause_event.is_set():
                 self._pause_event.wait(timeout=1)
                 continue
@@ -521,20 +525,26 @@ class BossEngine:
         # 执行搜索与投递循环
         try:
             self._complete_pending_once()
-            for attempt in range(3):
+            targets = resolve_city_targets(self._config["search"].get("city", ""))
+            page_limits = page_allocations(self._config["search"].get("page_count", 5), len(targets))
+            for (city_name, city_code), city_pages in zip(targets, page_limits):
                 if self._stop_event.is_set():
                     break
-                try:
-                    self._main_loop()
-                    break
-                except Exception as exc:
-                    self.add_log("warn", f"⚠️ 搜索流程中断（第 {attempt + 1} 次）：{exc}")
-                    if attempt == 2:
-                        self.add_log("error", "❌ 搜索重试未恢复；继续检查已联系会话的简历发送状态")
+                self.add_log("info", f"🌆 城市 {city_name}：最多搜索 {city_pages} 批")
+                for attempt in range(3):
+                    if self._stop_event.is_set():
                         break
-                    if self._stop_event.wait(30):
+                    try:
+                        self._main_loop(city_code, city_name, city_pages)
                         break
-                    self._complete_pending_once()
+                    except Exception as exc:
+                        self.add_log("warn", f"⚠️ {city_name} 搜索中断（第 {attempt + 1} 次）：{exc}")
+                        if attempt == 2:
+                            self.add_log("error", f"❌ {city_name} 搜索重试未恢复；继续下一城市")
+                            break
+                        if self._stop_event.wait(30):
+                            break
+                        self._complete_pending_once()
             if self._mode == "auto":
                 self._monitor_pending_resumes()
         except Exception as e:
@@ -571,7 +581,7 @@ class BossEngine:
             if self._pause_event.is_set():
                 self._complete_pending_once()
 
-    def _main_loop(self):
+    def _main_loop(self, city_code="", city_name="不限", page_limit=None):
         """搜索→分析→投递 主循环
 
         每个关键词只搜索一次，之后**停留在搜索页**：
@@ -591,8 +601,8 @@ class BossEngine:
             return
         threshold = ai_cfg.get("match_threshold", 60)
         keywords_to_try = [search_cfg["keyword"]] + search_cfg.get("secondary_keywords", [])
-        city = search_cfg.get("city", "")
-        max_pages = search_cfg.get("page_count", 5)
+        city = city_code
+        max_pages = page_limit or search_cfg.get("page_count", 5)
 
         # ── 网页内置筛选（经验/学历/薪资/类型），未设置的自动从简历推导 ──
         filters = search_cfg.get("filters", {})
@@ -626,7 +636,7 @@ class BossEngine:
             # 处理已完成的人工审核投递
             self._process_reviews()
 
-            self.add_log("info", f"🔍 搜索关键词: {keyword}（城市: {city or '不限'}）")
+            self.add_log("info", f"🔍 搜索关键词: {keyword}（城市: {city_name}，代码: {city or '不限'}）")
             self._set_status(self.RUNNING, f"搜索: {keyword}")
 
             # ── 搜索（每个关键词只导航一次，后续靠下拉/翻页加载）──
@@ -672,7 +682,7 @@ class BossEngine:
                         if self._stats["applied"] >= app_cfg.get("daily_limit", 50):
                             break
                         result = self._process_job(job_url, idx, len(new_urls), page,
-                                                   threshold, app_cfg)
+                                                   threshold, app_cfg, city_name)
                         if result not in ("retry", "stop", "quota"):
                             self._processed_jobs.add(job_url)
                         if result in ("stop", "quota"):
@@ -706,7 +716,8 @@ class BossEngine:
         self.add_log("info", f"🏁 处理完成，共 {self._stats['total']} 个岗位，"
                              f"已确认沟通 {self._stats['applied']} 个")
 
-    def _process_job(self, job_url, idx, total, page, threshold, app_cfg):
+    def _process_job(self, job_url, idx, total, page, threshold, app_cfg,
+                     city_name="不限"):
         """处理单个岗位：打开详情 → 检查 → AI 分析 → 投递/跳过
 
         返回 "stop" 表示需要停止搜索（半自动待审核超限），否则返回 None。
@@ -784,6 +795,22 @@ class BossEngine:
             self._browser.back_to_search()
             random_delay(2, 4)
             return "retry"
+
+        if city_name != "不限":
+            actual_city = str(jd_info.get("city") or "").strip()
+            if not actual_city.startswith(city_name):
+                reason = f"岗位城市 {actual_city or '未识别'} 不属于本轮 {city_name}"
+                self._stats["skipped"] += 1
+                self.add_log("info", f"  ⏭️ {reason}，未发起沟通")
+                save_result("skipped", {
+                    "job_title": job_title,
+                    "company": jd_info.get("company", ""),
+                    "city": actual_city,
+                    "url": job_url,
+                    "reason": reason,
+                })
+                self._browser.back_to_search()
+                return
 
         # A mixed role can score well on technical keywords while spending
         # most of the working day outside the user's target function.

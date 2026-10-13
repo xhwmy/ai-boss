@@ -14,6 +14,7 @@
 import json
 import re
 import time
+from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 
 from config import ROOT_DIR
@@ -516,8 +517,11 @@ class BossBrowser:
             except WebbridgeError:
                 if not self.wb.switch_tab("/web/geek/jobs"):
                     raise
-        elif city and f"city={city}" not in self.wb.get_page_url():
-            self.wb.navigate_fast(search_url)
+        else:
+            current_url = self.wb.get_page_url()
+            current_city = parse_qs(urlparse(current_url).query).get("city", [""])[0]
+            if current_city != str(city or ""):
+                self.wb.navigate_fast(search_url)
         if not self._wait_url_contains('/web/geek/jobs', timeout=30):
             logger.warning('  ⚠️ 搜索页跳转未完成')
             return False
@@ -561,6 +565,11 @@ class BossBrowser:
         # 7. 记住当前 URL（含筛选参数，用于投递后返回保持筛选状态）
         try:
             self._last_search_url = self.wb.get_page_url()
+            actual_city = parse_qs(urlparse(self._last_search_url).query).get("city", [""])[0]
+            if city and actual_city != str(city):
+                logger.warning("  ⚠️ 网页未保留目标城市参数；将按岗位详情中的城市二次过滤")
+            elif city:
+                logger.info(f"  🌆 搜索页城市参数已生效: {actual_city}")
         except Exception:
             pass
 
