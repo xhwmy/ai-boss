@@ -45,6 +45,7 @@ def load_env() -> dict:
 
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
     api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    model = os.getenv("AI_MODEL", "deepseek-chat")
 
     if not api_key or api_key == "sk-your-deepseek-api-key-here":
         print("⚠️  警告：未配置 DeepSeek API Key！")
@@ -54,6 +55,7 @@ def load_env() -> dict:
     return {
         "api_key": api_key,
         "api_base": api_base,
+        "model": model,
     }
 
 

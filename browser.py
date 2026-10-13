@@ -24,7 +24,7 @@ logger = setup_logger("browser")
 
 # ── BOSS 直聘页面 URL ──
 BOSS_URL = "https://www.zhipin.com"
-SEARCH_URL = "https://www.zhipin.com/web/geek/job"
+SEARCH_URL = "https://www.zhipin.com/web/geek/jobs"
 LOGIN_URL = "https://www.zhipin.com/web/user/"
 
 # ── 页面文字标记 ──
@@ -304,9 +304,10 @@ class BossBrowser:
         logger.info("🌐 正在启动 KIMI Webbridge 连接...")
         self.wb.start()
         if not self.wb.wait_ready(timeout=60):
+            self.wb.close()
             raise ConnectionError(
                 "KIMI Webbridge 扩展未连接。请确保：\n"
-                "  1. Edge 浏览器已打开\n"
+                "  1. Chrome 浏览器已打开\n"
                 "  2. KIMI Webbridge 扩展已安装并启用"
             )
         logger.info("✅ KIMI Webbridge 就绪！")
@@ -365,6 +366,9 @@ class BossBrowser:
         ⭐ 绝不替换当前标签页：若当前页是控制面板等其他页面且没有 BOSS 标签页，
         会在「新标签页」中打开 BOSS，原标签页（控制面板）完整保留。
         """
+        if self.wb.switch_tab("zhipin.com"):
+            return True
+
         # 1. 当前标签页已经是 BOSS → 直接使用
         try:
             url = self.wb.get_page_url()
@@ -462,7 +466,36 @@ class BossBrowser:
             remaining = int(deadline - time.time())
             if remaining % 30 == 0:
                 logger.info(f"   等待中（还剩 {remaining} 秒）...")
-        logger.warning("  ⚠️ 登录超时，请手动登录后重启")
+        raise ConnectionError("BOSS 登录超时；请在已安装 Webbridge 的浏览器登录后重启")
+
+    def verify_account_resume(self, expected_name: str, resume_filename: str):
+        """Confirm the signed-in account; verify the attachment before sending it."""
+        # Reuse the chat tab across retries. A timed-out navigation can still
+        # create a tab, so inspect the tab list before attempting another.
+        if not self.wb.switch_tab("/web/geek/chat"):
+            try:
+                self.wb.navigate("https://www.zhipin.com/web/geek/chat", new_tab=True)
+            except WebbridgeError:
+                if not self.wb.switch_tab("/web/geek/chat"):
+                    raise
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            try:
+                state = self.wb.call("evaluate", {"code": """(() => ({
+                    name:document.querySelector('.user-nav .label-text')?.innerText || '',
+                    chats:document.querySelectorAll('li[role=listitem] .friend-content').length,
+                    url:location.href}))()"""}, timeout=10).get("value") or {}
+            except WebbridgeError:
+                time.sleep(1)
+                continue
+            if state.get("name"):
+                if expected_name and state["name"].strip() != expected_name.strip():
+                    raise ConnectionError(f"浏览器 BOSS 账号与简历姓名 {expected_name} 不一致")
+                if state.get("chats"):
+                    logger.info("  ✅ BOSS 账号已核对；发送时再核对附件简历")
+                    return
+            time.sleep(0.5)
+        raise ConnectionError("BOSS 聊天页未加载完成，无法核对登录姓名")
 
     # ══════════ 搜索功能 ══════════
 
@@ -477,7 +510,17 @@ class BossBrowser:
         if city:
             search_url += f"?city={city}"
         logger.info(f"  🔍 正在搜索: {keyword}")
-        self.wb.navigate(search_url)
+        if not self.wb.switch_tab("/web/geek/jobs"):
+            try:
+                self.wb.navigate(search_url, new_tab=True)
+            except WebbridgeError:
+                if not self.wb.switch_tab("/web/geek/jobs"):
+                    raise
+        elif city and f"city={city}" not in self.wb.get_page_url():
+            self.wb.navigate_fast(search_url)
+        if not self._wait_url_contains('/web/geek/jobs', timeout=30):
+            logger.warning('  ⚠️ 搜索页跳转未完成')
+            return False
         time.sleep(3)
         self._wait_page_ready(timeout=15)
 
@@ -486,30 +529,24 @@ class BossBrowser:
             logger.warning("  ⚠️ 需要先登录")
             return False
 
-        # 3. 点击搜索框输入关键词
+        # 3. 直接填写搜索框。新版扩展在后台标签页上无法可靠执行鼠标点击。
         selectors = [
             "input[placeholder*='搜索']",
             "input[placeholder*='职位']",
             "input[type='text']",
         ]
-        clicked = False
-        for sel in selectors:
+        for selector in selectors:
             try:
-                self.wb.mouse_click(sel)
-                clicked = True
+                self.wb.fill(selector, keyword)
+                logger.info(f"  ⌨️ 已输入: {keyword}")
                 break
-            except WebbridgeError:
-                continue
-
-        if not clicked:
-            logger.warning("  ⚠️ 未找到搜索框")
+            except WebbridgeError as exc:
+                logger.debug(f"搜索框 {selector} 填写失败: {exc}")
+        else:
+            logger.warning("  ⚠️ 未找到可填写的搜索框")
             return False
 
-        # 4. 输入关键词并回车
-        time.sleep(0.5)
-        self.wb.type_text(keyword)
-        logger.info(f"  ⌨️ 已输入: {keyword}")
-        time.sleep(0.5)
+        # 4. 提交搜索
         self.wb.send_keys("Enter")
         logger.info("  🔍 正在搜索...")
 
@@ -803,16 +840,17 @@ class BossBrowser:
         """判断当前页面是否为搜索结果列表页（web/geek），排除 job_detail 详情页"""
         try:
             url = self.wb.get_page_url()
-            return "web/geek" in url and "job_detail" not in url
+            return "/web/geek/jobs" in url
         except Exception:
             return False
 
     def open_job_detail(self, url: str) -> bool:
         """直接导航到岗位详情页"""
         logger.info(f"  🔗 打开详情页...")
-        self.wb.navigate(url)
-        time.sleep(3)
-        ok = self._wait_page_ready(timeout=10)
+        self.wb.navigate_fast(url)
+        if not self._wait_url_contains("/job_detail/", timeout=25):
+            return False
+        ok = self._wait_page_ready(timeout=15)
         if not ok:
             return False
 
@@ -1053,69 +1091,52 @@ class BossBrowser:
 
     # ══════════ 投递操作 ══════════
 
-    def click_apply(self) -> bool:
-        """点击详情页的「立即沟通」按钮（用 JS 精确定位到详情页的大按钮）"""
-        js = """
-            (() => {
-                // 找所有包含「立即沟通」的可见元素
-                const all = [...document.querySelectorAll('*')]
-                    .filter(el => el.textContent.trim() === '立即沟通'
-                        && el.offsetHeight > 25
-                        && el.offsetWidth > 50
-                        && el.checkVisibility());
-                if (all.length === 0) return false;
-                // 选最大的那个（详情页的按钮通常比列表页的大）
-                all.sort((a, b) => b.offsetWidth * b.offsetHeight - a.offsetWidth * a.offsetHeight);
-                const btn = all[0];
-                btn.scrollIntoView({block: 'center', behavior: 'instant'});
-                // 用 dispatchEvent 模拟真实点击
-                btn.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
-                return true;
-            })()
-        """
+    def _contact_state(self) -> dict:
+        """只读检查当前详情页的沟通按钮和该职位会话的发送状态。"""
+        return self.wb.evaluate("""(() => {
+            const button = document.querySelector('a.btn-startchat');
+            const status = [...document.querySelectorAll('.message-item .status')]
+                .map(el => el.textContent.trim());
+            return {
+                button: button?.textContent.trim() || '',
+                sent: status.some(text => ['已发送', '已送达', '已读'].includes(text)),
+                chatOpen: !!document.querySelector('textarea.input-area'),
+            };
+        })()""") or {}
+
+    def contact_job(self) -> dict:
+        """首次沟通一次；只有 BOSS 显示默认招呼已发送才返回 sent。"""
+        url = self.wb.get_page_url()
+        if not re.search(r"/job_detail/[^/?#]+[.]html", url):
+            return {"status": "failed", "reason": "当前页面不是职位详情"}
+
+        before = self._contact_state()
+        if before.get("button") in ("继续沟通", "已沟通"):
+            return {"status": "already", "reason": "该职位已有沟通"}
+        if before.get("button") != "立即沟通":
+            return {"status": "failed", "reason": "未找到可用的立即沟通按钮"}
+
         try:
-            result = self.wb.evaluate(js)
-            if not result:
-                # 备用：用 mouse_click
-                logger.info("  ⚠️ 用备用方式点击...")
-                self.wb.mouse_click("//*[contains(text(), '立即沟通')]")
-            time.sleep(3)
-            return True
-        except Exception as e:
-            logger.warning(f"点击「立即沟通」失败: {e}")
-            return False
-
-    def send_greeting(self) -> bool:
-        """发送自动打招呼消息"""
-        # 等聊天窗口出现
-        if not self._wait_for_text(CHAT_SEND, timeout=5):
-            logger.info("  💬 未检测到聊天窗口，可能无需打招呼")
-            return True
-
-        logger.info("  💬 聊天窗口已打开，发送打招呼...")
-        time.sleep(1)
-
-        # 点击「发送」按钮
-        send_js = """
-            (() => {
-                const btns = [...document.querySelectorAll('button, a, div, span')]
-                    .filter(el => el.textContent.trim() === '发送' && el.offsetHeight > 20);
-                if (btns.length === 0) return false;
-                // 通常发送按钮在页面底部或弹窗中
-                const btn = btns[btns.length - 1];
-                btn.scrollIntoView({block: 'center'});
-                btn.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
-                return true;
-            })()
-        """
-        try:
-            self.wb.evaluate(send_js)
-            time.sleep(2)
-            logger.info("  ✅ 打招呼消息已发送")
-            return True
-        except Exception as e:
-            logger.warning(f"发送打招呼失败: {e}")
-            return False
+            # 后台标签页收不到真实鼠标事件；扩展优先启用焦点仿真，不抢桌面焦点。
+            self.wb.call("cdp", {"method": "Page.bringToFront", "params": {}})
+            self.wb.mouse_click("a.btn-startchat")
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                state = self._contact_state()
+                if state.get("button") in ("继续沟通", "已沟通") and state.get("sent"):
+                    return {"status": "sent", "reason": "BOSS 会话显示已发送"}
+                time.sleep(0.5)
+            return {"status": "unconfirmed", "reason": "点击后未看到 BOSS 的已发送状态"}
+        except Exception as exc:
+            return {"status": "unconfirmed", "reason": str(exc)}
+        finally:
+            try:
+                self.wb.call("cdp", {
+                    "method": "Emulation.setFocusEmulationEnabled",
+                    "params": {"enabled": False},
+                })
+            except Exception:
+                pass
 
     def close_chat_overlay(self):
         """关闭聊天弹窗，回到岗位详情页"""
@@ -1147,42 +1168,28 @@ class BossBrowser:
             pass
 
     def has_applied(self) -> bool:
-        """检查当前岗位是否已投递（详情页显示「已沟通」）"""
+        """只检查当前职位按钮，避免其他推荐职位的文字造成误判。"""
         try:
-            return self.wb.page_has_text(APPLIED_MARKER)
+            return self._contact_state().get("button") in ("继续沟通", "已沟通")
         except Exception:
             return False
 
     def back_to_search(self):
-        """回到搜索结果页（投递后重置状态），确保真的回到搜索页
-
-        ⭐ v2.5：导航后校验是否真的在 web/geek 搜索页；若页面仍停留在
-        job_detail/ 等失效/详情页则换 URL 重试，防止引擎卡在详情页导致
-        后续滚轮加载不到新岗位。
-        """
-        for url in [self._last_search_url, SEARCH_URL, f"{BOSS_URL}/web/geek/jobs"]:
-            if not url:
-                continue
+        """快速返回上次搜索结果页，确认页面地址后再继续。"""
+        target = self._last_search_url if "/web/geek/jobs" in self._last_search_url else SEARCH_URL
+        for attempt in range(3):
             try:
-                self.wb.navigate(url)
-                time.sleep(3)
-                self._wait_page_ready(timeout=10)
-                if self._is_search_page():
-                    # 记录当前实际搜索 URL，后续返回使用同样的 URL
-                    try:
-                        self._last_search_url = self.wb.get_page_url()
-                    except Exception:
-                        pass
+                if self.wb.switch_tab("/web/geek/jobs") and self._wait_page_ready(timeout=8):
+                    self._last_search_url = self.wb.get_page_url()
                     return
-            except Exception:
-                continue
-        # 全部候选失败：再兜底导航一次搜索页
-        try:
-            self.wb.navigate(SEARCH_URL)
-            time.sleep(3)
-            self._wait_page_ready(timeout=10)
-        except Exception:
-            pass
+                self.wb.navigate_fast(target)
+                if self._wait_url_contains("/web/geek/jobs", timeout=20) and self._wait_page_ready(timeout=20):
+                    self._last_search_url = self.wb.get_page_url()
+                    return
+            except WebbridgeError as exc:
+                logger.warning("  ⚠️ 返回搜索页失败（第 %s 次）：%s", attempt + 1, exc)
+            time.sleep(2 + attempt * 2)
+        raise WebbridgeError("搜索结果页加载失败，重试 3 次后仍未恢复")
 
     # ══════════ 翻页功能 ══════════
 

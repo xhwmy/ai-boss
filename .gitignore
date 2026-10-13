@@ -5,6 +5,7 @@
 config.json
 resume.json
 *.docx
+*.pdf
 .claude/
 
 # 运行产生的数据

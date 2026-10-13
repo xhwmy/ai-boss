@@ -19,6 +19,8 @@ from config import (
     validate_config,
 )
 from browser import BossBrowser
+from application_ledger import ApplicationLedger
+from submission import SubmissionWorkflow, greeting_for, RESUME_NAME
 from analyzer import JDAnalyzer
 import database  # ⭐ v3.0 超预期岗位收藏（SQLite）
 import blacklist  # v3.1 低质量岗位拉黑名单（三级：永久/短期/观察）
@@ -66,6 +68,8 @@ class BossEngine:
         # 待人工审核队列（半自动模式）
         self._pending_reviews = []
         self._review_queue = queue.Queue()
+        self._ledger = ApplicationLedger()
+        self._last_ten_pause_count = 0
 
         # 配置（可运行时修改）
         self._config = load_config()
@@ -74,11 +78,12 @@ class BossEngine:
         self._resume_text = build_resume_text(self._resume)
 
         # 运行模式
-        self._mode = "auto"  # "auto" = 全自动, "semi" = 半自动（需人工确认）
+        self._mode = "auto"  # 默认自动沟通；发送结果必须由 BOSS 页面确认
 
         # 模块引用
         self._analyzer = None
         self._browser = None
+        self._submission = None
 
         # 已处理的 job id 集合（防止重复）
         self._processed_jobs = set()
@@ -265,55 +270,92 @@ class BossEngine:
         else:
             self.add_log("info", f"👤 已跳过审核: {review.get('job_title', '') if review else job_id}")
 
+    def _wait_for_quota(self) -> bool:
+        """按已确认发送的持久化记录限制每天和每小时联系量。"""
+        app_cfg = self._config["application"]
+        announced = ""
+        while not self._stop_event.is_set():
+            if not self._pause_event.is_set():
+                self._pause_event.wait(timeout=1)
+                continue
+            allowed, reason, next_at = self._ledger.quota(
+                max(1, int(app_cfg.get("daily_limit", 50))),
+                max(1, int(app_cfg.get("max_per_hour", 15))),
+            )
+            if allowed:
+                return True
+            if reason != announced:
+                self.add_log("warn", f"  ⏳ {reason}")
+                announced = reason
+            if next_at is None:
+                return False
+            self._set_status(self.RUNNING, reason)
+            seconds = max(1, min(10, (next_at - datetime.now()).total_seconds()))
+            self._stop_event.wait(seconds)
+        return False
+
+    def _apply_current_job(self, record: dict) -> str:
+        """发起沟通后继续发送个性化介绍；PDF 按平台限制等待双方回复。"""
+        outcome = self._browser.contact_job()
+        status = outcome.get("status")
+        title = record.get("job_title", "未知岗位")
+        if status == "sent":
+            if self._ledger.record_sent(record):
+                self._stats["applied"] += 1
+                self.add_log("info", f"  ✅ BOSS 已确认发送: {title}（本轮 {self._stats['applied']} 个）")
+                greeting = record.get("greeting") or greeting_for(self._resume, record)
+                state, detail = self._submission.process(record, greeting)
+                if state == "sent":
+                    self.add_log("info", f"  📎 {title}：{detail}")
+                elif state == "pending":
+                    self.add_log("info", f"  ⏳ {title}：{detail}；收到招聘方回复后会自动补发")
+                else:
+                    self.add_log("warn", f"  ⚠️ {title}：{detail}；已保留待补发记录")
+                return "sent"
+            self.add_log("info", f"  📋 记录中已有该岗位，未重复计数: {title}")
+            return "already"
+        if status == "already":
+            self._stats["skipped"] += 1
+            self.add_log("info", f"  📋 BOSS 显示已沟通，跳过: {title}")
+            return "already"
+
+        self._stats["failed"] += 1
+        reason = outcome.get("reason", "未知原因")
+        save_result("unconfirmed", {**record, "reason": reason})
+        raise RuntimeError(f"沟通结果未确认：{title}；{reason}。已停止，避免重复发送")
+
     def _process_reviews(self):
-        """处理已人工审核通过的投递请求（在 main loop 中周期性调用）"""
-        processed = 0
+        """处理人工批准的岗位，使用与自动模式相同的发送和确认流程。"""
         while True:
             try:
                 item = self._review_queue.get_nowait()
             except queue.Empty:
-                break
-
-            if not item.get("decision", {}).get("should_apply", False):
+                return
+            if not item.get("decision", {}).get("should_apply"):
                 continue
-
             review = item.get("review", {})
             url = review.get("url", "")
-            if not url:
+            if not url or self._ledger.was_sent(url):
                 continue
-
-            title = review.get("job_title", "未知")
-            self.add_log("info", f"  👤 人工审核通过，正在投递: {title}")
-            try:
-                self._browser.navigate(url)
-                time.sleep(3)
-                if self._browser.click_apply():
-                    self._browser.send_greeting()
-                    # ⭐ v2.5：投递后回到搜索结果页，避免停留在详情页导致
-                    # 后续 get_job_urls 把「相似职位」误当成搜索结果
-                    self._browser.back_to_search()
-                    self._stats["applied"] += 1
-                    save_result("applied", {
-                        "job_title": title,
-                        "company": review.get("company", ""),
-                        "company_size": review.get("company_size", ""),
-                        "financing": review.get("financing", ""),
-                        "listed": review.get("listed"),
-                        "salary": review.get("salary", ""),
-                        "match_score": review.get("match_score", 0),
-                        "reason": "人工审核通过",
-                        "url": url,  # ⭐ v3.0 保存 BOSS 网址供回看
-                    })
-                    self.add_log("info", f"  ✅ 人工审核投递成功！({self._stats['applied']})")
-                    processed += 1
-                else:
-                    self._browser.back_to_search()
-                    self.add_log("warn", f"  ❌ 人工审核投递失败: {title}")
-            except Exception as e:
-                self.add_log("error", f"  ❌ 处理审核投递异常: {e}")
-
-        if processed > 0:
-            self.add_log("info", f"  📊 本次处理 {processed} 条人工审核投递")
+            if not self._wait_for_quota():
+                self._review_queue.put(item)
+                return
+            title = review.get("job_title", "未知岗位")
+            self.add_log("info", f"  👤 人工审核通过，正在沟通: {title}")
+            if not self._browser.open_job_detail(url):
+                self._stats["failed"] += 1
+                self.add_log("warn", f"  ❌ 岗位详情未打开: {title}")
+                self._browser.back_to_search()
+                continue
+            self._apply_current_job({
+                "job_title": title,
+                "company": review.get("company", ""),
+                "salary": review.get("salary", ""),
+                "match_score": review.get("match_score", 0),
+                "reason": "人工审核通过",
+                "url": url,
+            })
+            self._browser.back_to_search()
 
     def _merge_auto_filters(self, filters: dict) -> dict:
         """智能筛选：未手动指定的筛选项，自动从简历推导默认值。
@@ -355,6 +397,8 @@ class BossEngine:
         self._stats = {"total": 0, "applied": 0, "skipped": 0,
                        "failed": 0, "skipped_no_match": 0, "skip_reasons": []}
         self._pending_reviews = []
+        self._review_queue = queue.Queue()
+        self._last_ten_pause_count = 0
         self._processed_jobs = set()
         self._log_buffer = []
         self._start_time = time.time()
@@ -405,6 +449,7 @@ class BossEngine:
                 "mode": self._mode,
                 "elapsed": self.elapsed,
                 "pending_reviews": len(self._pending_reviews),
+                "submission": self._ledger.summary(),
                 "config": {
                     "search": {k: v for k, v in self._config.get("search", {}).items()},
                     "ai": {k: v for k, v in self._config.get("ai", {}).items()},
@@ -424,7 +469,7 @@ class BossEngine:
     def _run(self):
         """引擎主循环（在后台线程中运行）"""
         self._set_status(self.RUNNING, "正在初始化...")
-        self.add_log("info", "🚀 BOSS 直聘自动投递引擎启动")
+        self.add_log("info", "🚀 BOSS 直聘自动沟通引擎启动")
 
         # ⭐ v3.0 初始化数据库（超预期岗位收藏表）
         try:
@@ -440,39 +485,58 @@ class BossEngine:
 
         # 初始化 AI 分析器
         self.add_log("info", "🤖 正在初始化 AI 分析器...")
-        self._analyzer = JDAnalyzer(api_key=self._env["api_key"], api_base=self._env["api_base"])
+        self._analyzer = JDAnalyzer(api_key=self._env["api_key"], api_base=self._env["api_base"], model=self._env["model"])
         if not self._analyzer.is_ready():
             self.add_log("error", "❌ AI 分析器初始化失败")
             self._set_status(self.ERROR, "AI 初始化失败")
             return
         self.add_log("info", "✅ AI 分析器就绪")
 
-        # 启动 KIMI Webbridge 连接
-        self.add_log("info", "🌐 正在连接 KIMI Webbridge...")
-        self.add_log("info", "💡 请确保 Edge 浏览器已打开，且 KIMI Webbridge 扩展已安装")
-        try:
-            self._browser = BossBrowser(self._config)
-            self._browser.start()
-            self.add_log("info", "✅ Webbridge 连接成功！")
-        except Exception as e:
-            self.add_log("error", f"❌ 浏览器连接失败: {e}")
-            self.add_log("info", "💡 请先打开 Edge 浏览器并安装 KIMI Webbridge 扩展")
-            self._set_status(self.ERROR, f"连接失败: {str(e)[:50]}")
-            return
-
-        # 确保已登录
-        try:
-            self.add_log("info", "🔑 检查登录状态...")
-            self._browser.ensure_logged_in()
-        except Exception as e:
-            self.add_log("error", f"❌ 登录检查失败: {e}")
-            self._set_status(self.ERROR, f"登录失败: {str(e)[:50]}")
-            self._browser.close()
+        # 浏览器或扩展可能暂时无法响应（例如页面加载、电脑锁屏）。
+        # Keep the service alive and retry instead of ending the overnight run.
+        while not self._stop_event.is_set():
+            try:
+                self.add_log("info", "🌐 正在连接 KIMI Webbridge...")
+                self._browser = BossBrowser(self._config)
+                self._browser.start()
+                self._submission = SubmissionWorkflow(self._browser.wb, self._ledger, self.add_log)
+                self.add_log("info", "✅ Webbridge 连接成功！")
+                self.add_log("info", "🔑 检查登录状态...")
+                self._browser.ensure_logged_in()
+                self._browser.verify_account_resume(self._resume.get("name", ""), RESUME_NAME)
+                break
+            except Exception as exc:
+                self.add_log("warn", f"⚠️ 浏览器暂不可用：{exc}；60 秒后自动重试")
+                if self._browser:
+                    try:
+                        self._browser.close()
+                    except Exception:
+                        pass
+                self._set_status(self.RUNNING, "等待浏览器恢复，60 秒后重试")
+                if self._stop_event.wait(60):
+                    return
+        if self._stop_event.is_set():
             return
 
         # 执行搜索与投递循环
         try:
-            self._main_loop()
+            self._complete_pending_once()
+            for attempt in range(3):
+                if self._stop_event.is_set():
+                    break
+                try:
+                    self._main_loop()
+                    break
+                except Exception as exc:
+                    self.add_log("warn", f"⚠️ 搜索流程中断（第 {attempt + 1} 次）：{exc}")
+                    if attempt == 2:
+                        self.add_log("error", "❌ 搜索重试未恢复；继续检查已联系会话的简历发送状态")
+                        break
+                    if self._stop_event.wait(30):
+                        break
+                    self._complete_pending_once()
+            if self._mode == "auto":
+                self._monitor_pending_resumes()
         except Exception as e:
             self.add_log("error", f"❌ 运行异常: {e}")
             self._set_status(self.ERROR, f"异常: {str(e)[:50]}")
@@ -481,7 +545,31 @@ class BossEngine:
             if self._status not in [self.ERROR]:
                 self._set_status(self.IDLE, "已完成")
             self.add_log("info", f"👋 引擎结束，共处理 {self._stats['total']} 个岗位，"
-                                  f"投递 {self._stats['applied']} 个")
+                                  f"已确认沟通 {self._stats['applied']} 个")
+
+    def _complete_pending_once(self):
+        pending = self._ledger.pending()
+        for record in pending:
+            if self._stop_event.is_set():
+                return
+            greeting = record.get("greeting") or greeting_for(self._resume, record)
+            try:
+                status, detail = self._submission.process(record, greeting)
+                self.add_log("info" if status in ("sent", "pending") else "warn",
+                             f"  📎 待补发 {record.get('job_title', '')}：{detail}")
+            except Exception as exc:
+                self.add_log("warn", f"  ⚠️ 待补发 {record.get('job_title', '')}：{exc}")
+
+    def _monitor_pending_resumes(self):
+        while not self._stop_event.is_set():
+            count = len(self._ledger.pending())
+            if not count:
+                return
+            self._set_status(self.RUNNING, f"等待招聘方回复，待发送简历 {count} 份")
+            if self._stop_event.wait(300):
+                return
+            if self._pause_event.is_set():
+                self._complete_pending_once()
 
     def _main_loop(self):
         """搜索→分析→投递 主循环
@@ -494,6 +582,13 @@ class BossEngine:
         search_cfg = self._config["search"]
         app_cfg = self._config["application"]
         ai_cfg = self._config["ai"]
+        allowed, reason, next_at = self._ledger.quota(
+            max(1, int(app_cfg.get("daily_limit", 50))),
+            max(1, int(app_cfg.get("max_per_hour", 15))),
+        )
+        if not allowed and next_at is None:
+            self.add_log("warn", f"⏹️  {reason}，本轮不再搜索")
+            return
         threshold = ai_cfg.get("match_threshold", 60)
         keywords_to_try = [search_cfg["keyword"]] + search_cfg.get("secondary_keywords", [])
         city = search_cfg.get("city", "")
@@ -545,7 +640,9 @@ class BossEngine:
 
             # 首次搜索成功后不再尝试备选关键词（备选词仅作兜底）
             page = 1
-            seen_urls = set()
+            # A browser timeout can restart this search in the same run. Keep
+            # completed URLs out of later attempts instead of rescoring them.
+            seen_urls = set(self._processed_jobs)
             while page <= max_pages:
                 # ── 停止/暂停/上限 检查 ──
                 if self._stop_event.is_set():
@@ -576,8 +673,11 @@ class BossEngine:
                             break
                         result = self._process_job(job_url, idx, len(new_urls), page,
                                                    threshold, app_cfg)
-                        if result == "stop":  # 半自动待审核超限
-                            self.add_log("warn", "⏹️  待审核超限，停止搜索")
+                        if result not in ("retry", "stop", "quota"):
+                            self._processed_jobs.add(job_url)
+                        if result in ("stop", "quota"):
+                            if result == "stop":
+                                self.add_log("warn", "⏹️  当前批次已停止")
                             return
                 else:
                     self.add_log("info", "  本批无新岗位")
@@ -604,7 +704,7 @@ class BossEngine:
             break  # 主关键词处理完成，不再自动切换备选词
 
         self.add_log("info", f"🏁 处理完成，共 {self._stats['total']} 个岗位，"
-                             f"投递 {self._stats['applied']} 个")
+                             f"已确认沟通 {self._stats['applied']} 个")
 
     def _process_job(self, job_url, idx, total, page, threshold, app_cfg):
         """处理单个岗位：打开详情 → 检查 → AI 分析 → 投递/跳过
@@ -612,10 +712,13 @@ class BossEngine:
         返回 "stop" 表示需要停止搜索（半自动待审核超限），否则返回 None。
         """
         # 每投递 10 个暂停
-        if self._stats["applied"] > 0 and self._stats["applied"] % 10 == 0:
+        applied_count = self._stats["applied"]
+        if applied_count > 0 and applied_count % 10 == 0 and applied_count != self._last_ten_pause_count:
+            self._last_ten_pause_count = applied_count
             pause_sec = app_cfg.get("apply_10_pause_minutes", 3) * 60
-            self.add_log("info", f"⏸️  已投递 {self._stats['applied']} 个，暂停 {pause_sec//60} 分钟")
-            time.sleep(pause_sec)
+            self.add_log("info", f"⏸️  已沟通 {applied_count} 个，暂停 {pause_sec//60} 分钟")
+            if self._stop_event.wait(pause_sec):
+                return "stop"
 
         self._stats["total"] += 1
         self.add_log("info", f"── [{self._stats['total']}] 岗位 {idx+1}/{total} ──")
@@ -631,6 +734,11 @@ class BossEngine:
                 random_delay(2, 4)
                 return
 
+        if self._ledger.was_sent(job_url):
+            self._stats["skipped"] += 1
+            self.add_log("info", "  📋 投递记录中已有该岗位，跳过")
+            return
+
         # ── 打开岗位详情 ──
         self._set_status(self.RUNNING, f"打开详情 {idx+1}")
         if not self._browser.open_job_detail(job_url):
@@ -638,7 +746,7 @@ class BossEngine:
             self.add_log("warn", "  ⚠️ 打开详情失败")
             random_delay(2, 4)
             self._browser.back_to_search()
-            return
+            return "retry"
 
         time.sleep(1)
 
@@ -649,7 +757,7 @@ class BossEngine:
 
         # ── 检查是否已投递 ──
         if self._browser.has_applied():
-            self.add_log("info", "  📋 已投递过，跳过")
+            self.add_log("info", "  📋 BOSS 显示已沟通，跳过")
             self._stats["skipped"] += 1
             self._browser.back_to_search()
             random_delay(2, 4)
@@ -675,6 +783,23 @@ class BossEngine:
             self._stats["failed"] += 1
             self._browser.back_to_search()
             random_delay(2, 4)
+            return "retry"
+
+        # A mixed role can score well on technical keywords while spending
+        # most of the working day outside the user's target function.
+        excluded_titles = self._config.get("search", {}).get(
+            "excluded_title_keywords", ["内容审核", "内容审查"])
+        if any(word and word in job_title for word in excluded_titles):
+            reason = "岗位名称含非目标职责"
+            self._stats["skipped"] += 1
+            self.add_log("info", f"  ⏭️ 跳过 {job_title}（{reason}）")
+            save_result("skipped", {
+                "job_title": job_title,
+                "company": jd_info.get("company", ""),
+                "url": job_url,
+                "reason": reason,
+            })
+            self._browser.back_to_search()
             return
 
         # ── ⭐ v3.1 劳务外包关键词预检（零 AI 成本）：命中直接拉黑跳过，省一次 AI 调用 ──
@@ -700,6 +825,13 @@ class BossEngine:
             "match_score": 0, "should_apply": False,
             "reason": "AI 未配置", "key_matches": [], "key_gaps": [],
         }
+        if decision.get("reason") in ("AI 不可用", "AI 未配置"):
+            # An API outage is not a job-quality judgment. In particular,
+            # score 0 must not be written to the persistent blacklist.
+            self._stats["failed"] += 1
+            self.add_log("warn", f"  ⚠️ {job_title}：AI 暂不可用，本轮不评估或拉黑")
+            self._browser.back_to_search()
+            return "retry"
 
         # ⭐ v3.0 评分分级：超预期（≥over_threshold）/ 符合预期（≥threshold）/ 不符合
         score = decision.get("match_score", 0)
@@ -772,7 +904,7 @@ class BossEngine:
 
         # ── 半自动模式：加入待审核列表，不阻塞，继续搜索 ──
         job_id = f"p{page}_c{idx}_{int(time.time())}"
-        should_apply = decision.get("should_apply", False)
+        should_apply = bool(decision.get("should_apply")) and score >= threshold
 
         if self._mode == "semi":
             # 先处理已完成的人工审核投递
@@ -815,30 +947,23 @@ class BossEngine:
 
         # ── 执行投递或跳过 ──
         if should_apply:
-            self._set_status(self.RUNNING, f"投递: {job_title}")
-            self.add_log("info", f"  🚀 投递中... (匹配度: {decision.get('match_score', 0)}%)")
-            if self._browser.click_apply():
-                # 发送打招呼
-                self._browser.send_greeting()
-                # 回到搜索页
-                self._browser.back_to_search()
-                self._stats["applied"] += 1
-                save_result("applied", {
-                    "job_title": job_title,
-                    "company": jd_info.get("company", ""),
-                    "company_size": jd_info.get("company_size", ""),
-                    "financing": jd_info.get("financing", ""),
-                    "listed": jd_info.get("listed"),
-                    "salary": jd_info.get("salary", ""),
-                    "match_score": score,
-                    "reason": decision.get("reason", ""),
-                    "url": job_url,  # ⭐ v3.0 保存 BOSS 网址供回看
-                })
-                self.add_log("info", f"  ✅ 投递成功！({self._stats['applied']}/{app_cfg.get('daily_limit', 50)})")
-            else:
-                self._stats["failed"] += 1
-                self.add_log("warn", "  ❌ 点击立即沟通失败")
-                self._browser.back_to_search()
+            if not self._wait_for_quota():
+                return "quota"
+            self._set_status(self.RUNNING, f"沟通: {job_title}")
+            self.add_log("info", f"  🚀 开始沟通（匹配度: {score}%）")
+            self._apply_current_job({
+                "job_title": job_title,
+                "greeting": greeting_for(self._resume, {"job_title": job_title, "jd_text": jd_text}),
+                "company": jd_info.get("company", ""),
+                "company_size": jd_info.get("company_size", ""),
+                "financing": jd_info.get("financing", ""),
+                "listed": jd_info.get("listed"),
+                "salary": jd_info.get("salary", ""),
+                "match_score": score,
+                "reason": decision.get("reason", ""),
+                "url": job_url,
+            })
+            self._browser.back_to_search()
         else:
             self._stats["skipped"] += 1
             reason = decision.get("reason", "AI 建议跳过")

@@ -105,7 +105,7 @@ def main():
         sys.exit(1)
 
     # ── 2. 初始化 AI 分析器 ──
-    analyzer = JDAnalyzer(api_key=env["api_key"], api_base=env["api_base"])
+    analyzer = JDAnalyzer(api_key=env["api_key"], api_base=env["api_base"], model=env["model"])
     if not analyzer.is_ready():
         logger.warning("⚠️ AI 分析器未就绪，将跳过所有岗位（仅浏览）")
         logger.warning("   但脚本仍可运行，方便你测试浏览器功能")

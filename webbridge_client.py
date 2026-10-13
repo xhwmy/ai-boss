@@ -52,6 +52,7 @@ class WebbridgeClient:
         self._lock = threading.Lock()
 
         self._ext_version: Optional[str] = None
+        self._tab_id: Optional[int] = None
 
     # ══════════ 生命周期 ══════════
 
@@ -176,7 +177,7 @@ class WebbridgeClient:
             self._ext_version = data.get("payload", {}).get("extensionVersion", "未知")
             logger.info(f"  📦 扩展版本: {self._ext_version}")
             # 连接后自动获取当前标签页信息
-            await self._auto_inspect()
+            asyncio.create_task(self._auto_inspect())
 
         elif msg_type == "tool_result":
             req_id = data.get("responseToRequestId")
@@ -224,6 +225,8 @@ class WebbridgeClient:
         async with self._async_lock:
             self._response_events[req_id] = event
 
+        if self._tab_id is not None and tool not in ('list_browser_tabs', 'list_tabs') and not (tool == 'navigate' and args.get('newTab')):
+            args = {**args, '_tabId': self._tab_id}
         msg = json.dumps({
             "type": "tool_call",
             "requestId": req_id,
@@ -272,16 +275,37 @@ class WebbridgeClient:
 
     def navigate(self, url: str, new_tab: bool = False) -> dict:
         """导航到 URL"""
-        return self.call("navigate", {"url": url, "newTab": new_tab})
+        result = self.call("navigate", {"url": url, "newTab": new_tab}, timeout=45)
+        if new_tab and isinstance(result.get("tabId"), int):
+            self._tab_id = result["tabId"]
+        return result
+
+    def navigate_fast(self, url: str) -> dict:
+        """在当前 BOSS 标签页启动导航，不等待所有网络请求结束。"""
+        result = self.call("cdp", {
+            "method": "Page.navigate",
+            "params": {"url": url},
+        })
+        if result.get("errorText"):
+            raise WebbridgeError(f"页面跳转失败: {result['errorText']}")
+        return result
 
     def find_tab(self, url_pattern: str, active: bool = False) -> dict:
         """按 URL 查找标签页（hostname 匹配）"""
         return self.call("find_tab", {"url": url_pattern, "active": active})
 
     def switch_tab(self, url_pattern: str) -> bool:
-        """切换到匹配 URL 的标签页（确保后续操作在该标签页上执行）"""
-        result = self.call("find_tab", {"url": url_pattern, "active": True})
-        return result.get("found", False) or result.get("active", False)
+        """将后续命令固定到匹配的标签页，不抢占用户前台焦点。"""
+        tabs = self.call("list_browser_tabs", {}).get("tabs", [])
+        matches = [tab for tab in tabs if url_pattern in tab.get("url", "")]
+        if not matches:
+            return False
+        matches.sort(
+            key=lambda tab: ("/web/geek/jobs" in tab.get("url", ""), tab.get("active", False)),
+            reverse=True,
+        )
+        self._tab_id = matches[0]["tabId"]
+        return True
 
     def evaluate(self, code: str) -> Any:
         """执行 JavaScript，返回值"""
@@ -290,11 +314,11 @@ class WebbridgeClient:
 
     def click(self, selector: str) -> dict:
         """DOM 点击（通过 JS 触发，更快）"""
-        return self.call("click", {"selector": selector})
+        return self.call("click", {"selector": selector.replace("'", '"')})
 
     def mouse_click(self, selector: str) -> dict:
         """真实鼠标点击（CDP Input.dispatchMouseEvent，更逼真）"""
-        return self.call("mouse_click", {"selector": selector})
+        return self.call("mouse_click", {"selector": selector.replace("'", '"')})
 
     def mouse_wheel(self, delta_y: int = 500, x: int = 300, y: int = 400,
                     delta_x: int = 0) -> dict:
@@ -319,7 +343,7 @@ class WebbridgeClient:
 
     def fill(self, selector: str, value: str) -> dict:
         """填写输入框（通过 JS 设置 value）"""
-        return self.call("fill", {"selector": selector, "value": value})
+        return self.call("fill", {"selector": selector.replace("'", '"'), "value": value})
 
     def type_text(self, text: str) -> dict:
         """键盘输入文本（CDP Input.insertText，真实键盘事件）"""

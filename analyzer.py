@@ -67,9 +67,10 @@ SYSTEM_PROMPT_TEMPLATE = """你是一位专业的招聘匹配分析助手。你�
 class JDAnalyzer:
     """JD 分析器——使用 DeepSeek 评估岗位匹配度"""
 
-    def __init__(self, api_key: str, api_base: str = "https://api.deepseek.com"):
+    def __init__(self, api_key: str, api_base: str = "https://api.deepseek.com", model: str = "deepseek-chat"):
         self.api_key = api_key
         self.api_base = api_base
+        self.model = model
         self.llm = None
         self._init_llm()
 
@@ -80,20 +81,20 @@ class JDAnalyzer:
             return
 
         try:
-            from langchain_deepseek import ChatDeepSeek
+            from langchain_openai import ChatOpenAI
 
-            self.llm = ChatDeepSeek(
-                model="deepseek-chat",
+            self.llm = ChatOpenAI(
+                model=self.model,
                 api_key=self.api_key,
-                api_base=self.api_base,
+                base_url=self.api_base,
                 temperature=0.1,
                 max_tokens=1024,
             )
             # 测试连通性
             logger.info("✅ DeepSeek AI 初始化成功")
         except ImportError as e:
-            logger.error(f"❌ langchain-deepseek 导入失败: {e}")
-            logger.error("   请确认 conda 环境已安装: pip install langchain-deepseek")
+            logger.error(f"❌ langchain-openai 导入失败: {e}")
+            logger.error("   请确认 conda 环境已安装: pip install langchain-openai")
             self.llm = None
         except Exception as e:
             logger.error(f"❌ DeepSeek 初始化失败: {e}")
@@ -128,7 +129,7 @@ class JDAnalyzer:
             result_text = response.content if hasattr(response, "content") else str(response)
 
             # 解析返回的 JSON
-            result = self._parse_json_response(result_text)
+            result = self._parse_json_response(result_text, threshold)
             logger.info(f"  📊 匹配度: {result.get('match_score', '?')}分 → "
                         f"{'✅ 投递' if result.get('should_apply') else '⏭️ 跳过'}"
                         f" | {result.get('reason', '')}")
@@ -141,7 +142,7 @@ class JDAnalyzer:
             logger.warning(f"  ⚠️ AI 分析失败: {e}")
             return self._fallback_decision()
 
-    def _parse_json_response(self, text: str) -> dict:
+    def _parse_json_response(self, text: str, threshold: int = 60) -> dict:
         """从 AI 返回文本中提取 JSON"""
         # 尝试直接解析
         text = text.strip()
@@ -156,19 +157,29 @@ class JDAnalyzer:
             text = json_match.group()
 
         result = json.loads(text)
+        if not isinstance(result, dict):
+            raise ValueError("AI 返回内容不是岗位评估对象")
+        raw_score = result.get("match_score")
+        if isinstance(raw_score, bool):
+            raise ValueError("AI 匹配分数格式错误")
+        score = int(raw_score)
+        if not 0 <= score <= 100:
+            raise ValueError("AI 匹配分数超出范围")
 
         # 确保必需字段存在
         job_quality = result.get("job_quality", {}) or {}
+        if not isinstance(job_quality, dict):
+            job_quality = {}
         return {
-            "match_score": result.get("match_score", 50),
-            "should_apply": result.get("should_apply", False),
+            "match_score": score,
+            "should_apply": result.get("should_apply") is True and score >= threshold,
             "reason": result.get("reason", "AI 分析失败"),
             "key_matches": result.get("key_matches", []),
             "key_gaps": result.get("key_gaps", []),
             "job_quality": {
-                "is_outsourcing": bool(job_quality.get("is_outsourcing", False)),
+                "is_outsourcing": job_quality.get("is_outsourcing") is True,
                 "title_jd_consistent": job_quality.get("title_jd_consistent", True) is not False,
-                "jd_far_exceeds_resume": bool(job_quality.get("jd_far_exceeds_resume", False)),
+                "jd_far_exceeds_resume": job_quality.get("jd_far_exceeds_resume") is True,
             },
         }
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BOSS 直聘 AI 自动投递</title>
+<title>BOSS 直聘 AI 自动沟通</title>
 <style>
   :root {
     --bg: #f0f2f5;
@@ -176,7 +176,7 @@
 
   <!-- 头部 -->
   <div class="header">
-    <h1>🚀 BOSS 直聘 AI 自动投递 <small>v3.1</small></h1>
+    <h1>🚀 BOSS 直聘 AI 自动沟通 <small>v3.1</small></h1>
     <div style="display:flex;align-items:center;gap:10px">
       <a class="btn btn-outline btn-sm" href="/blacklist" target="_blank" title="查看低质量岗位黑名单（永久/短期/观察 三级，命中直接跳过）">🚫 黑名单</a>
       <a class="btn btn-outline btn-sm" href="/starred" target="_blank" title="查看历史超预期岗位（AI 评分 ≥ 超预期阈值 自动收藏）">⭐ 超预期岗位</a>
@@ -245,8 +245,12 @@
                    oninput="document.getElementById('thresholdVal').textContent=this.value">
           </div>
           <div class="form-group">
-            <label>每日投递上限</label>
-            <input id="cfg_daily" type="number" value="50" min="1" max="200">
+            <label>每日沟通上限</label>
+            <input id="cfg_daily" type="number" value="10" min="1" max="200">
+          </div>
+          <div class="form-group">
+            <label>每小时沟通上限</label>
+            <input id="cfg_hour" type="number" value="5" min="1" max="60">
           </div>
         </div>
         <div class="form-row">
@@ -336,7 +340,7 @@
         </div>
         <div class="form-row" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
           <div style="font-size:12px;color:var(--text2);background:#e8f5e9;padding:8px 12px;border-radius:4px;width:100%">
-            🛡️ 使用 <strong>KIMI Webbridge</strong> 控制真实浏览器，零自动化检测。<br>
+            🛡️ 使用 <strong>KIMI Webbridge</strong> 控制已登录浏览器；请遵守平台规则与发送频率。<br>
             💡 操作前请先打开 Edge 浏览器，登录 BOSS 直聘。
           </div>
         </div>
@@ -356,7 +360,15 @@
         </div>
         <div class="stat-item stat-green">
           <div class="num" id="statApplied">0</div>
-          <div class="label">✅ 已投递</div>
+          <div class="label">✅ 累计已沟通</div>
+        </div>
+        <div class="stat-item stat-blue">
+          <div class="num" id="statGreetings">0</div>
+          <div class="label">💬 个性化介绍已发</div>
+        </div>
+        <div class="stat-item stat-green">
+          <div class="num" id="statResumes">0</div>
+          <div class="label">📎 PDF 已发送</div>
         </div>
         <div class="stat-item stat-orange">
           <div class="num" id="statSkipped">0</div>
@@ -371,6 +383,7 @@
         ⏱️ 耗时：<span id="statElapsed">0秒</span>
         &nbsp;|&nbsp; 模式：<span id="statMode">全自动</span>
         &nbsp;|&nbsp; 待审核：<span id="statPending">0</span>
+        &nbsp;|&nbsp; 待发 PDF：<span id="statResumePending">0</span>
       </div>
     </div>
   </div>
@@ -427,7 +440,7 @@
       <span id="pendingWarn" style="display:none;margin-left:8px;font-size:12px;color:#c5221f;font-weight:600">&#x26A0;&#xFE0F; 已达上限，引擎已停止</span>
     </div>
     <div id="reviewArea">
-      <div class="empty-state">&#x2022; 半自动模式下 AI 持续搜索，岗位会自动加入此列表<br>&#x2022; 你可随时审核投递或跳过，引擎自动执行<br>&#x2022; 待审核超 50 条时引擎自动停止（防数据泄露）</div>
+      <div class="empty-state">&#x2022; 半自动模式下 AI 持续搜索，岗位会自动加入此列表<br>&#x2022; 你可随时审核沟通或跳过，引擎自动执行<br>&#x2022; 待审核超 50 条时引擎自动停止（防数据泄露）</div>
     </div>
   </div>
 
@@ -518,7 +531,8 @@ async function saveConfig() {
       over_match_threshold: parseInt(document.getElementById('cfg_over_threshold').value) || 80,
     },
     application: {
-      daily_limit: parseInt(document.getElementById('cfg_daily').value) || 50,
+      daily_limit: parseInt(document.getElementById('cfg_daily').value) || 10,
+      max_per_hour: parseInt(document.getElementById('cfg_hour').value) || 5,
     },
     blacklist: {
       enabled: document.getElementById('cfg_blacklist_enabled').checked,
@@ -596,7 +610,11 @@ function updateStatus(payload) {
   // 统计
   const stats = payload.stats || {};
   document.getElementById('statTotal').textContent = stats.total || 0;
-  document.getElementById('statApplied').textContent = stats.applied || 0;
+  document.getElementById('statApplied').textContent = (payload.submission || {}).contacted || 0;
+  const submission = payload.submission || {};
+  document.getElementById('statGreetings').textContent = submission.greetings_sent || 0;
+  document.getElementById('statResumes').textContent = submission.resumes_sent || 0;
+  document.getElementById('statResumePending').textContent = submission.pending_resumes || 0;
   document.getElementById('statSkipped').textContent = stats.skipped || 0;
   document.getElementById('statFailed').textContent = stats.failed || 0;
   document.getElementById('statElapsed').textContent = payload.elapsed || '0秒';
@@ -665,8 +683,9 @@ function updateStatus(payload) {
       }
     }
     if (c.application && !document.getElementById('cfg_daily').dataset.loaded) {
-      document.getElementById('cfg_daily').value = c.application.daily_limit || 50;
+      document.getElementById('cfg_daily').value = c.application.daily_limit || 10;
       document.getElementById('cfg_daily').dataset.loaded = '1';
+      document.getElementById('cfg_hour').value = c.application.max_per_hour || 5;
     }
     if (c.blacklist) {
       const bl = c.blacklist;
@@ -720,7 +739,7 @@ async function refreshReviews() {
 
     if (reviews.length === 0) {
       area.innerHTML = '<div class="empty-state">暂无待审核项 | '
-        + (mode === 'auto' ? '当前为全自动模式，AI 直接决定投递' : '等待 AI 分析完成...')
+        + (mode === 'auto' ? '当前为全自动模式，AI 直接决定是否发起沟通' : '等待 AI 分析完成...')
         + '</div>';
       return;
     }

@@ -20,6 +20,20 @@ app.config["UPLOAD_FOLDER"] = str(resume_upload.UPLOAD_DIR)
 # 全局引擎实例
 engine = BossEngine()
 
+
+def _keep_awake_while_running():
+    """Prevent Windows sleep only while the overnight engine is active."""
+    import ctypes
+
+    ES_CONTINUOUS = 0x80000000
+    ES_SYSTEM_REQUIRED = 0x00000001
+    kernel32 = ctypes.windll.kernel32
+    while True:
+        active = engine._status in (engine.RUNNING, engine.PAUSED, engine.STOPPING)
+        flags = ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if active else 0)
+        kernel32.SetThreadExecutionState(flags)
+        time.sleep(20)
+
 # ⭐ v3.0 初始化数据库（幂等）
 database.init_db()
 
@@ -354,14 +368,34 @@ def api_events():
 if __name__ == "__main__":
     import os
     import sys
+    from urllib.error import URLError
+    from urllib.request import Request, urlopen
     # 兼容非 UTF-8 控制台（PowerShell/cmd 默认 GBK），避免 emoji 打印导致启动崩溃
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     port = int(os.environ.get("PORT", 5000))
+    # A second launch reuses the existing panel; it must not create another engine.
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/api/status", timeout=2) as response:
+            current = json.load(response)
+        if "status" in current and "submission" in current:
+            req = Request(f"http://127.0.0.1:{port}/api/control/start",
+                          data=b"{}", headers={"Content-Type": "application/json"},
+                          method="POST")
+            with urlopen(req, timeout=5) as response:
+                print(json.load(response))
+            sys.exit(0)
+    except (URLError, OSError, ValueError):
+        pass
     print("=" * 50)
     print("  🚀 BOSS 直聘 AI 控制面板")
     print(f"  🌐 http://localhost:{port}")
     print("  ⏹️  按 Ctrl+C 停止服务器")
     print("=" * 50)
+    if os.environ.get("BOSS_AUTOSTART", "1") != "0":
+        threading.Timer(1.0, engine.start).start()
+    if os.name == "nt":
+        threading.Thread(target=_keep_awake_while_running, daemon=True,
+                         name="keep-awake-while-running").start()
     app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
