@@ -206,7 +206,8 @@ def api_review_decide():
     decision = data.get("decision", {})
     if not job_id:
         return jsonify({"success": False, "error": "缺少 job_id"}), 400
-    engine.submit_review_decision(job_id, decision)
+    if not engine.submit_review_decision(job_id, decision):
+        return jsonify({"success": False, "error": "审核项不存在或已处理，请刷新列表"}), 404
     engine.add_log("info", f"👤 人工决策已提交: {job_id}")
     return jsonify({"success": True})
 
@@ -334,17 +335,15 @@ def api_blacklist_clear():
 @app.route("/api/events")
 def api_events():
     """Server-Sent Events 实时推送"""
-    last_len = 0
+    last_seq = max(0, request.args.get("after", 0, type=int))
 
     def generate():
-        nonlocal last_len
+        nonlocal last_seq
         while True:
-            logs = engine.get_logs(200)
-            current_len = len(logs)
-            if current_len > last_len:
-                # 只推送新日志
-                new_logs = logs[-(current_len - last_len):]
-                last_len = current_len
+            new_logs = [entry for entry in engine.get_logs(500)
+                        if entry.get("seq", 0) > last_seq]
+            if new_logs:
+                last_seq = new_logs[-1]["seq"]
                 yield f"data: {json.dumps({'type': 'logs', 'data': new_logs})}\n\n"
 
             # 同时推送状态（含待审核数）

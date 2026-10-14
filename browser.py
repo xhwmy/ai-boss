@@ -14,6 +14,7 @@
 import json
 import re
 import time
+from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 
@@ -469,8 +470,9 @@ class BossBrowser:
                 logger.info(f"   等待中（还剩 {remaining} 秒）...")
         raise ConnectionError("BOSS 登录超时；请在已安装 Webbridge 的浏览器登录后重启")
 
-    def verify_account_resume(self, expected_name: str, resume_filename: str):
+    def verify_account_resume(self, expected_name: str):
         """Confirm the signed-in account; verify the attachment before sending it."""
+        self.last_account = None
         # Reuse the chat tab across retries. A timed-out navigation can still
         # create a tab, so inspect the tab list before attempting another.
         if not self.wb.switch_tab("/web/geek/chat"):
@@ -490,11 +492,17 @@ class BossBrowser:
                 time.sleep(1)
                 continue
             if state.get("name"):
-                if expected_name and state["name"].strip() != expected_name.strip():
+                name = state["name"].strip()
+                self.last_account = {
+                    "name": name,
+                    "verified_at": datetime.now().isoformat(timespec="seconds"),
+                    "matched": not expected_name or name == expected_name.strip(),
+                }
+                if not self.last_account["matched"]:
                     raise ConnectionError(f"浏览器 BOSS 账号与简历姓名 {expected_name} 不一致")
                 if state.get("chats"):
                     logger.info("  ✅ BOSS 账号已核对；发送时再核对附件简历")
-                    return
+                    return self.last_account
             time.sleep(0.5)
         raise ConnectionError("BOSS 聊天页未加载完成，无法核对登录姓名")
 
@@ -559,8 +567,9 @@ class BossBrowser:
         self._wait_page_ready(timeout=10)
 
         # 6. 应用 BOSS 网页内置筛选（经验/学历/薪资/类型）
-        if filters:
-            self.apply_filters(filters)
+        if filters and not self.apply_filters(filters):
+            logger.warning("  ⚠️ 搜索筛选未全部生效，停止本关键词处理")
+            return False
 
         # 7. 记住当前 URL（含筛选参数，用于投递后返回保持筛选状态）
         try:
@@ -588,6 +597,7 @@ class BossBrowser:
 
     def apply_filters(self, filters: dict):
         """使用 BOSS 网页内置的筛选下拉框过滤岗位（经验/学历/薪资/类型）"""
+        applied_all = True
         for key, option in (filters or {}).items():
             cat = FILTER_CATEGORIES.get(key)
             if not cat or not option or str(option).strip() in ("", "不限"):
@@ -595,12 +605,15 @@ class BossBrowser:
             label = cat["label"]
             if str(option) not in cat["options"]:
                 logger.warning(f"  ⚠️ 忽略无效筛选值 {label}={option}")
+                applied_all = False
                 continue
             logger.info(f"  🎚️ 设置筛选: {label}={option}")
             if self._apply_filter(label, str(option)):
                 time.sleep(2)  # 等筛选结果刷新
             else:
-                logger.warning(f"  ⚠️ 筛选 {label}={option} 应用失败，继续（不影响后续操作）")
+                logger.warning(f"  ⚠️ 筛选 {label}={option} 应用失败，已停止该搜索")
+                applied_all = False
+        return applied_all
 
     def _apply_filter(self, label: str, option: str) -> bool:
         """点击筛选栏下拉按钮，再选择目标选项。返回是否成功。"""

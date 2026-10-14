@@ -197,7 +197,7 @@
         <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
           <div class="btn-group">
             <button class="btn btn-success" id="btnStart" onclick="control('start')">▶️ 启动</button>
-            <button class="btn btn-warn" id="btnPause" onclick="control('pause')" disabled>⏸️ 暂停</button>
+            <button class="btn btn-warn" id="btnPause" onclick="control(currentStatus === 'paused' ? 'resume' : 'pause')" disabled>⏸️ 暂停</button>
             <button class="btn btn-danger" id="btnStop" onclick="control('stop')" disabled>⏹️ 停止</button>
           </div>
           <div style="margin-left:auto">
@@ -211,6 +211,7 @@
         <div style="margin-top:8px;font-size:12px;color:var(--text2)">
           <span id="currentJobInfo">等待启动...</span>
         </div>
+        <div style="margin-top:6px;font-size:12px;color:var(--text2)" id="accountInfo">BOSS 账号：等待登录核对</div>
       </div>
 
       <!-- 配置面板 -->
@@ -356,7 +357,7 @@
       <div class="stats-grid">
         <div class="stat-item stat-blue">
           <div class="num" id="statTotal">0</div>
-          <div class="label">共处理</div>
+          <div class="label">本轮处理</div>
         </div>
         <div class="stat-item stat-green">
           <div class="num" id="statApplied">0</div>
@@ -364,27 +365,31 @@
         </div>
         <div class="stat-item stat-blue">
           <div class="num" id="statGreetings">0</div>
-          <div class="label">💬 个性化介绍已发</div>
+          <div class="label">💬 历史介绍已发</div>
         </div>
         <div class="stat-item stat-green">
           <div class="num" id="statResumes">0</div>
-          <div class="label">📎 PDF 已发送</div>
+          <div class="label">📎 历史 PDF 已发送</div>
         </div>
         <div class="stat-item stat-orange">
           <div class="num" id="statSkipped">0</div>
-          <div class="label">⏭️ 已跳过</div>
+          <div class="label">⏭️ 本轮跳过</div>
         </div>
         <div class="stat-item stat-red">
           <div class="num" id="statFailed">0</div>
-          <div class="label">❌ 失败</div>
+          <div class="label">❌ 本轮失败</div>
         </div>
       </div>
       <div style="margin-top:12px;font-size:12px;color:var(--text2)">
         ⏱️ 耗时：<span id="statElapsed">0秒</span>
         &nbsp;|&nbsp; 模式：<span id="statMode">全自动</span>
         &nbsp;|&nbsp; 待审核：<span id="statPending">0</span>
+        &nbsp;|&nbsp; 已批准待执行：<span id="statQueuedApprovals">0</span>
+        &nbsp;|&nbsp; 需人工核对：<span id="statManualApprovals">0</span>
         &nbsp;|&nbsp; 待发 PDF：<span id="statResumePending">0</span>
+        &nbsp;|&nbsp; 待完成会话：<span id="statWorkflowPending">0</span>
       </div>
+      <div id="cityIncomplete" style="display:none;margin-top:8px;font-size:12px;color:var(--text2)"></div>
     </div>
   </div>
 
@@ -393,7 +398,7 @@
     <!-- 评分维度 -->
     <div class="card">
       <div class="card-title">🎯 评分维度
-        <span style="font-size:12px;color:var(--text2);font-weight:normal;margin-left:8px">AI 按以下维度加权评分，保存后即时生效</span>
+        <span style="font-size:12px;color:var(--text2);font-weight:normal;margin-left:8px">维度作为 AI 评分指引，保存后下个岗位生效</span>
       </div>
       <div id="scoringArea"><div class="empty-state">加载中...</div></div>
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
@@ -463,6 +468,8 @@
 <script>
 // ==================== 全局状态 ====================
 let mode = 'auto';
+let currentStatus = 'idle';
+let logSequence = 0;
 
 // ==================== Toast 提示 ====================
 function showToast(msg, type = 'info') {
@@ -575,6 +582,8 @@ async function reviewDecide(jobId, shouldApply, blacklist = false, level = 'perm
     const d = await r.json();
     if (d.success) {
       showToast(`✅ 已${label}该岗位`, 'success');
+    } else {
+      showToast('❌ 操作失败: ' + (d.error || '审核项已失效'), 'error');
     }
   } catch(e) {
     showToast('操作失败: ' + e.message, 'error');
@@ -590,6 +599,7 @@ function clearLogs() {
 // ==================== 更新 UI ====================
 function updateStatus(payload) {
   const st = payload.status;
+  currentStatus = st;
   const badge = document.getElementById('statusBadge');
   const text = document.getElementById('statusText');
 
@@ -615,10 +625,25 @@ function updateStatus(payload) {
   document.getElementById('statGreetings').textContent = submission.greetings_sent || 0;
   document.getElementById('statResumes').textContent = submission.resumes_sent || 0;
   document.getElementById('statResumePending').textContent = submission.pending_resumes || 0;
+  document.getElementById('statWorkflowPending').textContent = submission.pending_workflows || 0;
   document.getElementById('statSkipped').textContent = stats.skipped || 0;
   document.getElementById('statFailed').textContent = stats.failed || 0;
   document.getElementById('statElapsed').textContent = payload.elapsed || '0秒';
   document.getElementById('statPending').textContent = payload.pending_reviews || 0;
+  document.getElementById('statQueuedApprovals').textContent = payload.queued_approvals || 0;
+  document.getElementById('statManualApprovals').textContent = payload.manual_approvals || 0;
+  const accountEl = document.getElementById('accountInfo');
+  const account = payload.account;
+  if (account && account.name) {
+    const when = account.verified_at ? account.verified_at.replace('T', ' ') : '';
+    accountEl.textContent = `BOSS 账号：${account.name} · ${account.matched ? '启动时已核对' : '与简历姓名不一致'}${when ? ' · ' + when : ''}`;
+  } else {
+    accountEl.textContent = 'BOSS 账号：等待登录核对';
+  }
+  const incompleteEl = document.getElementById('cityIncomplete');
+  const incomplete = payload.incomplete_cities || [];
+  incompleteEl.style.display = incomplete.length ? 'block' : 'none';
+  incompleteEl.textContent = incomplete.length ? `搜索未完成的城市：${incomplete.join('、')}（浏览器连续超时，请查看日志）` : '';
 
   // 当前岗位
   const job = payload.current_job;
@@ -714,9 +739,11 @@ function appendLogs(logs) {
   const box = document.getElementById('logBox');
   if (!logs || logs.length === 0) return;
   for (const log of logs) {
+    if (log.seq && log.seq <= logSequence) continue;
     const div = document.createElement('div');
     div.innerHTML = `<span class="time">${escapeHtml(log.time)}</span> <span class="${log.level}">${escapeHtml(log.message)}</span>`;
     box.appendChild(div);
+    if (log.seq) logSequence = log.seq;
   }
   box.scrollTop = box.scrollHeight;
 }
@@ -1138,7 +1165,7 @@ async function clearUploadResume() {
 
 // ==================== SSE 连接 ====================
 function connectSSE() {
-  const evtSource = new EventSource('/api/events');
+  const evtSource = new EventSource('/api/events?after=' + logSequence);
   evtSource.onmessage = function(event) {
     try {
       const payload = JSON.parse(event.data);
@@ -1149,10 +1176,7 @@ function connectSSE() {
       }
     } catch(e) { /* ignore parse errors */ }
   };
-  evtSource.onerror = function() {
-    // 断线重连
-    setTimeout(connectSSE, 2000);
-  };
+  // EventSource 会自动重连；不再创建重复的连接。
 }
 
 // ==================== 初始化 ====================

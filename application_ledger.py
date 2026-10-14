@@ -105,5 +105,8 @@ class ApplicationLedger:
             "contacted": contacted,
             "greetings_sent": sum(bool(v.get("greeting_sent")) for v in records),
             "resumes_sent": sum(bool(v.get("resume_sent")) for v in records),
-            "pending_resumes": sum(not v.get("resume_sent") for v in records),
+            "pending_resumes": sum(bool(v.get("greeting_sent")) and not v.get("resume_sent")
+                                   for v in records),
+            "pending_workflows": sum(not (v.get("greeting_sent") and v.get("resume_sent"))
+                                     for v in records),
         }

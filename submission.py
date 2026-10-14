@@ -10,9 +10,6 @@ from resume_upload import get_uploaded_meta
 
 
 CHAT_URL = "https://www.zhipin.com/web/geek/chat"
-RESUME_NAME = (get_uploaded_meta() or {}).get("filename", "")
-
-
 def greeting_for(resume, record):
     """Use only skills actually present in the user's résumé and this JD."""
     title = (record.get("job_title") or "这个岗位").strip()[:35]
@@ -24,11 +21,11 @@ def greeting_for(resume, record):
         if isinstance(values, list):
             skills.update(str(x).lower() for x in values)
     matched = [x for x in ordered if x.lower() in jd and x.lower() in skills][:3]
-    if not matched:
-        matched = ["Linux", "Docker", "MySQL"]
     name = (resume.get("name") or "求职者").strip()
+    experience = (f"我目前从事软件技术工作，也做过{'、'.join(matched)}相关的部署或运维。"
+                  if matched else "我目前从事软件技术工作，希望结合岗位要求进一步介绍相关经历。")
     return (f"您好，我是{name}，想应聘贵司的{title}。"
-            f"我目前从事软件技术工作，也做过{'、'.join(matched)}相关的部署或运维。"
+            f"{experience}"
             "希望有机会进一步沟通，谢谢！")
 
 
@@ -158,12 +155,13 @@ class SubmissionWorkflow:
                 pass
 
     def send_resume(self, record):
-        if not RESUME_NAME:
+        resume_name = (get_uploaded_meta() or {}).get("filename", "")
+        if not resume_name:
             return "failed", "本地控制面板尚未上传简历附件"
         if self.ledger.phase(record["url"], "resume_sent"):
             return "sent", "已记录"
         existing = self._js("""(() => [...document.querySelectorAll('.chat-conversation .message-item.item-system')]
-            .some(e=>e.innerText.includes(__DATA__)&&e.innerText.includes('已发送给Boss')))()""", RESUME_NAME)
+            .some(e=>e.innerText.includes(__DATA__)&&e.innerText.includes('已发送给Boss')))()""", resume_name)
         if existing:
             self.ledger.mark_phase(record, "resume_sent")
             return "sent", "页面已有简历发送回执"
@@ -181,12 +179,12 @@ class SubmissionWorkflow:
         time.sleep(0.7)
         modal = self._js("""(() => {const m=document.querySelector('.dialog-wrap.active .choose-resume-dialog');
             return {open:!!m,names:m?[...m.querySelectorAll('.resume-name')].map(e=>e.innerText.trim()):[]}})()""") or {}
-        if RESUME_NAME not in modal.get("names", []):
-            return "failed", f"BOSS 附件列表中没有 {RESUME_NAME}"
+        if resume_name not in modal.get("names", []):
+            return "failed", f"BOSS 附件列表中没有 {resume_name}"
         self._js("""(() => {const m=document.querySelector('.dialog-wrap.active .choose-resume-dialog');
             const e=[...m.querySelectorAll('.resume-list .list-item')]
                 .find(x=>x.querySelector('.resume-name')?.innerText.trim()===__DATA__);
-            e?.click();return !!e})()""", RESUME_NAME)
+            e?.click();return !!e})()""", resume_name)
         time.sleep(0.5)
         enabled = self._js("""(() => {const b=document.querySelector('.dialog-wrap.active button.btn-confirm');
             return !!b&&!b.disabled&&!b.classList.contains('disabled')})()""")

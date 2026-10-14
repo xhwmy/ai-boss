@@ -88,7 +88,7 @@ class JDAnalyzer:
                 api_key=self.api_key,
                 base_url=self.api_base,
                 temperature=0.1,
-                max_tokens=1024,
+                max_tokens=2048,
             )
             # 测试连通性
             logger.info("✅ DeepSeek AI 初始化成功")
@@ -122,25 +122,29 @@ class JDAnalyzer:
             scoring_rules=scoring_rules or "无自定义评分维度，请根据岗位 JD 与求职者简历自行综合评估",
         )
 
-        try:
-            # 调用 DeepSeek
-            logger.info("  🤖 AI 正在分析岗位匹配度...")
-            response = self.llm.invoke(prompt)
-            result_text = response.content if hasattr(response, "content") else str(response)
-
-            # 解析返回的 JSON
-            result = self._parse_json_response(result_text, threshold)
-            logger.info(f"  📊 匹配度: {result.get('match_score', '?')}分 → "
-                        f"{'✅ 投递' if result.get('should_apply') else '⏭️ 跳过'}"
-                        f" | {result.get('reason', '')}")
-            return result
-
-        except json.JSONDecodeError:
-            logger.warning("  ⚠️ AI 返回格式异常，使用降级策略")
-            return self._fallback_decision()
-        except Exception as e:
-            logger.warning(f"  ⚠️ AI 分析失败: {e}")
-            return self._fallback_decision()
+        for attempt in range(2):
+            try:
+                logger.info("  🤖 AI 正在分析岗位匹配度...")
+                response = self.llm.invoke(prompt)
+                content = response.content if hasattr(response, "content") else str(response)
+                if isinstance(content, list):
+                    content = "\n".join(str(block.get("text", "")) if isinstance(block, dict)
+                                        else str(block) for block in content)
+                result = self._parse_json_response(str(content), threshold)
+                logger.info(f"  📊 匹配度: {result.get('match_score', '?')}分 → "
+                            f"{'✅ 投递' if result.get('should_apply') else '⏭️ 跳过'}"
+                            f" | {result.get('reason', '')}")
+                return result
+            except (json.JSONDecodeError, ValueError, TypeError):
+                if attempt == 0:
+                    logger.warning("  ⚠️ AI 返回格式异常，重试一次")
+                    prompt += "\n请只输出一个完整 JSON 对象，勿输出解释或代码块。"
+                else:
+                    logger.warning("  ⚠️ AI 返回格式仍异常，跳过该岗位")
+            except Exception as e:
+                logger.warning(f"  ⚠️ AI 分析失败: {e}")
+                return self._fallback_decision()
+        return self._fallback_decision()
 
     def _parse_json_response(self, text: str, threshold: int = 60) -> dict:
         """从 AI 返回文本中提取 JSON"""
@@ -151,12 +155,19 @@ class JDAnalyzer:
         text = re.sub(r'^```(?:json)?\s*', '', text)
         text = re.sub(r'\s*```$', '', text)
 
-        # 尝试找到 JSON 对象
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
-        if json_match:
-            text = json_match.group()
-
-        result = json.loads(text)
+        # Providers may wrap a valid object in prose or return several blocks.
+        decoder = json.JSONDecoder()
+        result = None
+        for match in re.finditer(r'\{', text):
+            try:
+                candidate, _ = decoder.raw_decode(text[match.start():])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict) and "match_score" in candidate:
+                result = candidate
+                break
+        if result is None:
+            raise json.JSONDecodeError("未找到完整岗位评分 JSON", text, 0)
         if not isinstance(result, dict):
             raise ValueError("AI 返回内容不是岗位评估对象")
         raw_score = result.get("match_score")

@@ -4,6 +4,7 @@ BOSS 直聘后台引擎 — 可控制/可暂停/支持人工干预
 
 import copy
 import json
+import os
 import threading
 import time
 import queue
@@ -22,7 +23,7 @@ from config import (
 from browser import BossBrowser
 from city_search import page_allocations, resolve_city_targets
 from application_ledger import ApplicationLedger
-from submission import SubmissionWorkflow, greeting_for, RESUME_NAME
+from submission import SubmissionWorkflow, greeting_for
 from analyzer import JDAnalyzer
 import database  # ⭐ v3.0 超预期岗位收藏（SQLite）
 import blacklist  # v3.1 低质量岗位拉黑名单（三级：永久/短期/观察）
@@ -66,10 +67,19 @@ class BossEngine:
         # 日志环形缓冲区
         self._log_buffer = []
         self._max_logs = 500
+        self._log_seq = int(time.time() * 1000)
+        self._account = None
+        self._incomplete_cities = []
 
         # 待人工审核队列（半自动模式）
-        self._pending_reviews = []
+        self._reviews_path = ROOT_DIR / "results" / "pending_reviews.json"
+        self._approvals_path = ROOT_DIR / "results" / "approved_reviews.json"
+        self._pending_reviews = self._read_review_list(self._reviews_path)
+        self._approved_reviews = self._read_review_list(self._approvals_path)
         self._review_queue = queue.Queue()
+        for item in self._approved_reviews:
+            if item.get("state") == "queued":
+                self._review_queue.put(item)
         self._ledger = ApplicationLedger()
         self._last_ten_pause_count = 0
 
@@ -166,12 +176,14 @@ class BossEngine:
     # ==================== 日志 ====================
 
     def add_log(self, level: str, message: str):
-        entry = {
-            "time": datetime.now().strftime("%H:%M:%S"),
-            "level": level,
-            "message": message,
-        }
         with self._lock:
+            self._log_seq = max(self._log_seq + 1, int(time.time() * 1000))
+            entry = {
+                "seq": self._log_seq,
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "level": level,
+                "message": message,
+            }
             self._log_buffer.append(entry)
             if len(self._log_buffer) > self._max_logs:
                 self._log_buffer = self._log_buffer[-self._max_logs:]
@@ -179,6 +191,22 @@ class BossEngine:
     def get_logs(self, n: int = 200) -> list:
         with self._lock:
             return list(self._log_buffer[-n:])
+
+    def _read_review_list(self, path):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                return []
+            return [item for item in data if isinstance(item, dict) and item.get("job_id")]
+        except (OSError, ValueError):
+            return []
+
+    def _save_review_list_locked(self, path, items):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(items, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
+        os.replace(temp_path, path)
 
     # ==================== 配置管理 ====================
 
@@ -231,7 +259,10 @@ class BossEngine:
                 if r.get("job_id") == job_id:
                     review = dict(r)
                     self._pending_reviews.pop(i)
+                    self._save_review_list_locked(self._reviews_path, self._pending_reviews)
                     break
+        if review is None:
+            return False
 
         # ⭐ v3.1 人工拉黑（永久/短期），直接入库并从待审核移除
         if decision.get("blacklist", False) and review and review.get("url"):
@@ -261,18 +292,27 @@ class BossEngine:
                              f"可在「🚫 黑名单」页面查看")
             except Exception as e:
                 self.add_log("warn", f"  ⚠️ 人工拉黑失败: {e}")
-            return
+                with self._lock:
+                    self._pending_reviews.append(review)
+                    self._save_review_list_locked(self._reviews_path, self._pending_reviews)
+                return False
+            return True
 
         if decision.get("should_apply", False) and review and review.get("url"):
-            # 加入投递处理队列，引擎会在适当时机执行
-            self._review_queue.put({
+            item = {
                 "job_id": job_id,
                 "decision": decision,
                 "review": review,
-            })
+                "state": "queued",
+            }
+            with self._lock:
+                self._approved_reviews.append(item)
+                self._save_review_list_locked(self._approvals_path, self._approved_reviews)
+            self._review_queue.put(item)
             self.add_log("info", f"👤 审核通过，等待引擎投递: {review.get('job_title', '')}")
         else:
             self.add_log("info", f"👤 已跳过审核: {review.get('job_title', '') if review else job_id}")
+        return True
 
     def _wait_for_quota(self) -> bool:
         """按已确认发送的持久化记录限制每天和每小时联系量。"""
@@ -336,30 +376,58 @@ class BossEngine:
             except queue.Empty:
                 return
             if not item.get("decision", {}).get("should_apply"):
+                self._finish_approval(item)
                 continue
             review = item.get("review", {})
             url = review.get("url", "")
             if not url or self._ledger.was_sent(url):
+                self._finish_approval(item)
                 continue
             if not self._wait_for_quota():
                 self._review_queue.put(item)
                 return
             title = review.get("job_title", "未知岗位")
             self.add_log("info", f"  👤 人工审核通过，正在沟通: {title}")
-            if not self._browser.open_job_detail(url):
+            try:
+                opened = self._browser.open_job_detail(url)
+            except Exception:
+                self._review_queue.put(item)
+                raise
+            if not opened:
                 self._stats["failed"] += 1
                 self.add_log("warn", f"  ❌ 岗位详情未打开: {title}")
+                self._review_queue.put(item)
                 self._browser.back_to_search()
-                continue
-            self._apply_current_job({
-                "job_title": title,
-                "company": review.get("company", ""),
-                "salary": review.get("salary", ""),
-                "match_score": review.get("match_score", 0),
-                "reason": "人工审核通过",
-                "url": url,
-            })
+                return
+            try:
+                self._apply_current_job({
+                    "job_title": title,
+                    "company": review.get("company", ""),
+                    "salary": review.get("salary", ""),
+                    "match_score": review.get("match_score", 0),
+                    "reason": "人工审核通过",
+                    "url": url,
+                })
+            except Exception as exc:
+                self._finish_approval(item, needs_manual=True)
+                self.add_log("warn", f"  ⚠️ {title} 审核后沟通未确认，需人工核对：{exc}")
+                self._browser.back_to_search()
+                return
+            self._finish_approval(item)
             self._browser.back_to_search()
+
+    def _finish_approval(self, item, needs_manual=False):
+        with self._lock:
+            job_id = item.get("job_id")
+            if needs_manual:
+                for saved in self._approved_reviews:
+                    if saved.get("job_id") == job_id:
+                        saved["state"] = "needs_manual"
+                        break
+            else:
+                self._approved_reviews = [saved for saved in self._approved_reviews
+                                          if saved.get("job_id") != job_id]
+            self._save_review_list_locked(self._approvals_path, self._approved_reviews)
 
     def _merge_auto_filters(self, filters: dict) -> dict:
         """智能筛选：未手动指定的筛选项，自动从简历推导默认值。
@@ -400,11 +468,17 @@ class BossEngine:
         self._pause_event.set()
         self._stats = {"total": 0, "applied": 0, "skipped": 0,
                        "failed": 0, "skipped_no_match": 0, "skip_reasons": []}
-        self._pending_reviews = []
+        self._pending_reviews = self._read_review_list(self._reviews_path)
+        self._approved_reviews = self._read_review_list(self._approvals_path)
         self._review_queue = queue.Queue()
+        for item in self._approved_reviews:
+            if item.get("state") == "queued":
+                self._review_queue.put(item)
         self._last_ten_pause_count = 0
         self._processed_jobs = set()
         self._log_buffer = []
+        self._account = None
+        self._incomplete_cities = []
         self._start_time = time.time()
 
         # 重新加载配置
@@ -451,8 +525,13 @@ class BossEngine:
                 "stats": dict(self._stats),
                 "current_job": self._current_job,
                 "mode": self._mode,
+                "account": dict(self._account) if self._account else None,
+                "incomplete_cities": list(self._incomplete_cities),
                 "elapsed": self.elapsed,
                 "pending_reviews": len(self._pending_reviews),
+                "queued_approvals": self._review_queue.qsize(),
+                "manual_approvals": sum(item.get("state") == "needs_manual"
+                                        for item in self._approved_reviews),
                 "submission": self._ledger.summary(),
                 "config": {
                     "search": {k: v for k, v in self._config.get("search", {}).items()},
@@ -507,9 +586,15 @@ class BossEngine:
                 self.add_log("info", "✅ Webbridge 连接成功！")
                 self.add_log("info", "🔑 检查登录状态...")
                 self._browser.ensure_logged_in()
-                self._browser.verify_account_resume(self._resume.get("name", ""), RESUME_NAME)
+                account = self._browser.verify_account_resume(self._resume.get("name", ""))
+                with self._lock:
+                    self._account = account
                 break
             except Exception as exc:
+                observed = getattr(self._browser, "last_account", None) if self._browser else None
+                if observed:
+                    with self._lock:
+                        self._account = observed
                 self.add_log("warn", f"⚠️ 浏览器暂不可用：{exc}；60 秒后自动重试")
                 if self._browser:
                     try:
@@ -541,12 +626,13 @@ class BossEngine:
                         self.add_log("warn", f"⚠️ {city_name} 搜索中断（第 {attempt + 1} 次）：{exc}")
                         if attempt == 2:
                             self.add_log("error", f"❌ {city_name} 搜索重试未恢复；继续下一城市")
+                            with self._lock:
+                                self._incomplete_cities.append(city_name)
                             break
                         if self._stop_event.wait(30):
                             break
                         self._complete_pending_once()
-            if self._mode == "auto":
-                self._monitor_pending_resumes()
+            self._monitor_followups()
         except Exception as e:
             self.add_log("error", f"❌ 运行异常: {e}")
             self._set_status(self.ERROR, f"异常: {str(e)[:50]}")
@@ -570,16 +656,25 @@ class BossEngine:
             except Exception as exc:
                 self.add_log("warn", f"  ⚠️ 待补发 {record.get('job_title', '')}：{exc}")
 
-    def _monitor_pending_resumes(self):
+    def _monitor_followups(self):
+        """Keep the browser worker alive for human approvals and unlocked resumes."""
+        next_resume_check = time.monotonic() + 300
         while not self._stop_event.is_set():
-            count = len(self._ledger.pending())
-            if not count:
-                return
-            self._set_status(self.RUNNING, f"等待招聘方回复，待发送简历 {count} 份")
-            if self._stop_event.wait(300):
-                return
-            if self._pause_event.is_set():
+            if not self._pause_event.is_set():
+                self._stop_event.wait(2)
+                continue
+            self._process_reviews()
+            if time.monotonic() >= next_resume_check:
                 self._complete_pending_once()
+                next_resume_check = time.monotonic() + 300
+            resume_count = len(self._ledger.pending())
+            with self._lock:
+                review_count = len(self._pending_reviews)
+            if not resume_count and not review_count and self._review_queue.empty():
+                return
+            self._set_status(self.RUNNING,
+                             f"等待后续处理：待审核 {review_count}，待完成会话 {resume_count}")
+            self._stop_event.wait(2)
 
     def _main_loop(self, city_code="", city_name="不限", page_limit=None):
         """搜索→分析→投递 主循环
@@ -961,6 +1056,7 @@ class BossEngine:
             }
             with self._lock:
                 self._pending_reviews.append(review_item)
+                self._save_review_list_locked(self._reviews_path, self._pending_reviews)
                 pending_count = len(self._pending_reviews)
             self.add_log("info", f"  🤔 已加入审核列表 (共{pending_count}条待审, AI建议: {review_item['ai_decision']})")
 
@@ -971,6 +1067,9 @@ class BossEngine:
             if pending_count >= 50:
                 self.add_log("warn", f"⚠️ 待审核岗位已达 50 条上限（防数据泄露），停止搜索")
                 return "stop"
+            self._browser.back_to_search()
+            random_delay(*app_cfg.get("delay_range_seconds", [3, 8]))
+            return
 
         # ── 执行投递或跳过 ──
         if should_apply:
