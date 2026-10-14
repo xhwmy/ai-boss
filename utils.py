@@ -5,6 +5,7 @@
 
 import json
 import logging
+import os
 import random
 import time
 from datetime import datetime
@@ -113,8 +114,14 @@ def save_result(category: str, data: dict):
     data["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     records.append(data)
 
-    with open(file_path, "w", encoding="utf-8") as f:
+    # Replace the completed file atomically so an interrupted write keeps the
+    # previous day's records readable after a restart.
+    temp_path = file_path.with_name(file_path.name + ".tmp")
+    with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(records, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temp_path, file_path)
 
 
 # ===== 计时器 =====

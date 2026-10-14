@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>投递历史 · BOSS 直聘 AI 自动沟通</title>
+<style>
+  :root { --bg:#f0f2f5; --card:#fff; --text:#202124; --muted:#5f6368; --line:#e0e0e0; --blue:#1a73e8; --green:#188038; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--text); font:14px/1.6 -apple-system,"Microsoft YaHei",sans-serif; }
+  .container { max-width:1200px; margin:auto; }
+  .card { background:var(--card); border-radius:9px; box-shadow:0 2px 8px rgba(0,0,0,.08); padding:20px 24px; margin-bottom:16px; }
+  .top,.picker { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  h1 { font-size:21px; margin:0; }
+  h2 { font-size:16px; margin:0 0 12px; }
+  a { color:var(--blue); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  button,input { font:inherit; }
+  button { cursor:pointer; border:1px solid var(--line); background:#fff; border-radius:6px; padding:7px 12px; color:var(--text); }
+  button:hover { background:#f6f8fa; }
+  input[type=date] { border:1px solid var(--line); border-radius:6px; padding:7px 10px; min-height:38px; }
+  .picker-left { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .note { color:var(--muted); font-size:12px; margin:10px 0 0; }
+  .cards { display:grid; grid-template-columns:repeat(5,minmax(130px,1fr)); gap:10px; margin-top:16px; }
+  .metric { background:#f7f8fa; border-radius:8px; padding:14px; }
+  .metric strong { display:block; font-size:28px; line-height:1.2; color:var(--blue); }
+  .metric:nth-child(2) strong,.metric:nth-child(4) strong { color:var(--green); }
+  .metric span { color:var(--muted); font-size:12px; }
+  .scroll { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; min-width:730px; }
+  th,td { text-align:left; padding:10px 8px; border-bottom:1px solid #eceff1; vertical-align:top; }
+  th { color:var(--muted); font-size:12px; font-weight:600; white-space:nowrap; }
+  tr:last-child td { border-bottom:0; }
+  .empty { color:var(--muted); text-align:center; padding:24px 0; }
+  .muted { color:var(--muted); font-size:12px; }
+  .pill { display:inline-block; background:#e8f0fe; color:#174ea6; border-radius:20px; padding:2px 8px; white-space:nowrap; }
+  .pill.resume { background:#e6f4ea; color:#137333; }
+  .pill.greeting { background:#fef7e0; color:#805b00; }
+  @media(max-width:800px){ .cards { grid-template-columns:repeat(2,minmax(0,1fr)); } .card { padding:16px; } }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="card top">
+    <h1>📅 投递历史</h1>
+    <a href="/">← 返回控制面板</a>
+  </div>
+
+  <div class="card">
+    <div class="picker">
+      <div class="picker-left">
+        <label for="historyDate">选择日期</label>
+        <button type="button" onclick="shiftDate(-1)" aria-label="前一天">‹</button>
+        <input id="historyDate" type="date" onchange="loadHistory()">
+        <button type="button" onclick="shiftDate(1)" aria-label="后一天">›</button>
+        <button type="button" onclick="selectToday()">今天</button>
+      </div>
+      <span class="muted" id="refreshState">读取已保存的记录中…</span>
+    </div>
+    <div class="cards">
+      <div class="metric"><strong id="matched">0</strong><span>当天匹配记录</span></div>
+      <div class="metric"><strong id="contacted">0</strong><span>当天确认沟通</span></div>
+      <div class="metric"><strong id="greetings">0</strong><span>当天介绍消息已发</span></div>
+      <div class="metric"><strong id="resumes">0</strong><span>当天 PDF 已发送</span></div>
+      <div class="metric"><strong id="pending">0</strong><span>当天联系岗位目前待发 PDF</span></div>
+    </div>
+    <p class="note">按本机日期统计实际记录的动作。介绍消息或 PDF 可能发给更早联系的岗位；“待发 PDF”显示所选日期联系岗位的当前状态。招聘方回复和面试邀请尚无可靠记录，因此不计入。</p>
+  </div>
+
+  <div class="card">
+    <h2>当天动作明细</h2>
+    <div class="scroll"><table><thead><tr><th>时间</th><th>动作</th><th>岗位</th><th>公司</th></tr></thead><tbody id="events"></tbody></table></div>
+    <div id="eventsEmpty" class="empty" hidden>这一天没有已保存的沟通或发送记录</div>
+  </div>
+
+  <div class="card">
+    <h2>当天联系岗位及后续状态</h2>
+    <div class="scroll"><table><thead><tr><th>沟通时间</th><th>岗位</th><th>公司</th><th>介绍消息</th><th>PDF</th></tr></thead><tbody id="records"></tbody></table></div>
+    <div id="recordsEmpty" class="empty" hidden>这一天没有已保存的沟通记录</div>
+  </div>
+</div>
+<script>
+function localDate(value = new Date()) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${value.getFullYear()}-${pad(value.getMonth()+1)}-${pad(value.getDate())}`;
+}
+function safeBossUrl(raw) {
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'https:' && (url.hostname === 'zhipin.com' || url.hostname.endsWith('.zhipin.com')) ? url.href : '';
+  } catch (_) { return ''; }
+}
+function setText(id, value) { document.getElementById(id).textContent = value; }
+function addJobCell(row, item) {
+  const cell = row.insertCell();
+  const url = safeBossUrl(item.url);
+  if (url) {
+    const link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = item.job_title || '查看岗位';
+    cell.appendChild(link);
+  } else {
+    cell.textContent = item.job_title || '未知岗位';
+  }
+}
+function addTextCell(row, value) { row.insertCell().textContent = value || '—'; }
+function displayTime(value) { return value ? String(value).replace('T', ' ') : '—'; }
+function renderEvents(items) {
+  const body = document.getElementById('events');
+  body.replaceChildren();
+  document.getElementById('eventsEmpty').hidden = items.length > 0;
+  const labels = { contact:'确认沟通', greeting:'介绍已发', resume:'PDF 已发送' };
+  for (const item of items) {
+    const row = body.insertRow();
+    addTextCell(row, displayTime(item.time));
+    const action = row.insertCell();
+    const pill = document.createElement('span');
+    pill.className = 'pill ' + (item.type === 'resume' ? 'resume' : item.type === 'greeting' ? 'greeting' : '');
+    pill.textContent = labels[item.type] || item.type;
+    action.appendChild(pill);
+    addJobCell(row, item);
+    addTextCell(row, item.company);
+  }
+}
+function phaseLabel(time, known) {
+  if (time) return '已发 · ' + displayTime(time);
+  return known ? '待发或待确认' : '旧记录未统计';
+}
+function renderRecords(items) {
+  const body = document.getElementById('records');
+  body.replaceChildren();
+  document.getElementById('recordsEmpty').hidden = items.length > 0;
+  for (const item of items) {
+    const row = body.insertRow();
+    addTextCell(row, displayTime(item.contact_at));
+    addJobCell(row, item);
+    addTextCell(row, item.company);
+    addTextCell(row, phaseLabel(item.greeting_at, item.workflow_recorded));
+    addTextCell(row, phaseLabel(item.resume_at, item.workflow_recorded));
+  }
+}
+let historyRequestId = 0;
+async function loadHistory() {
+  const day = document.getElementById('historyDate').value;
+  if (!day) return;
+  const requestId = ++historyRequestId;
+  setText('refreshState', '读取中…');
+  try {
+    const response = await fetch('/api/history?date=' + encodeURIComponent(day), { cache:'no-store' });
+    const data = await response.json();
+    if (requestId !== historyRequestId) return;
+    if (!response.ok) throw new Error(data.error || '读取失败');
+    const totals = data.totals || {};
+    setText('matched', totals.matched || 0);
+    setText('contacted', totals.contacted || 0);
+    setText('greetings', totals.greetings_sent || 0);
+    setText('resumes', totals.resumes_sent || 0);
+    setText('pending', totals.pending_resumes_from_contacts || 0);
+    renderEvents(data.events || []);
+    renderRecords(data.records || []);
+    setText('refreshState', '已从本地历史记录读取 · 每 30 秒更新');
+    history.replaceState(null, '', '/history?date=' + encodeURIComponent(day));
+  } catch (error) {
+    if (requestId === historyRequestId) setText('refreshState', '读取失败：' + error.message);
+  }
+}
+function shiftDate(days) {
+  const input = document.getElementById('historyDate');
+  const value = new Date(input.value + 'T12:00:00');
+  if (Number.isNaN(value.getTime())) return;
+  value.setDate(value.getDate() + days);
+  input.value = localDate(value);
+  loadHistory();
+}
+function selectToday() {
+  document.getElementById('historyDate').value = localDate();
+  loadHistory();
+}
+const requested = new URLSearchParams(location.search).get('date');
+document.getElementById('historyDate').value = /^\d{4}-\d{2}-\d{2}$/.test(requested || '') ? requested : localDate();
+loadHistory();
+setInterval(loadHistory, 30000);
+</script>
+</body>
+</html>

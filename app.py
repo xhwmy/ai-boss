@@ -5,10 +5,11 @@ BOSS 直聘自动投递 — Web 控制面板服务器
 import json
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 
 from boss_engine import BossEngine
+from application_ledger import ApplicationLedger
 import database  # ⭐ v3.0 超预期岗位收藏（SQLite）
 import resume_upload  # 📎 v3.2 简历附件上传（.docx / .pdf）
 
@@ -56,6 +57,12 @@ def starred_page():
 def blacklist_page():
     """⭐ v3.1 低质量岗位黑名单查看页（独立新页面）"""
     return render_template("blacklist.html")
+
+
+@app.route("/history")
+def history_page():
+    """按日期查看已保存的投递与消息发送记录。"""
+    return render_template("history.html")
 
 
 # ==================== 配置 API ====================
@@ -183,6 +190,18 @@ def api_set_mode():
 def api_status():
     """获取引擎状态"""
     return jsonify(engine.get_status_payload())
+
+
+@app.route("/api/history")
+def api_history():
+    day_text = request.args.get("date", date.today().isoformat())
+    try:
+        selected = date.fromisoformat(day_text)
+        if selected.isoformat() != day_text:
+            raise ValueError("日期格式错误")
+    except (TypeError, ValueError):
+        return jsonify({"error": "日期格式应为 YYYY-MM-DD"}), 400
+    return jsonify(ApplicationLedger().daily_report(selected))
 
 
 @app.route("/api/logs")

@@ -2,7 +2,7 @@
 
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from config import ROOT_DIR
@@ -109,4 +109,82 @@ class ApplicationLedger:
                                    for v in records),
             "pending_workflows": sum(not (v.get("greeting_sent") and v.get("resume_sent"))
                                      for v in records),
+        }
+
+    def daily_report(self, day: date):
+        """Build a date report from durable contact and workflow records.
+
+        Contact counts use the day the BOSS conversation was confirmed. Message
+        and PDF counts use their own confirmed send dates, which can be later.
+        """
+        day_text = day.isoformat()
+        applied = self._read(self.results_dir / f"applied_{day_text}.json")
+        matched = self._read(self.results_dir / f"matched_{day_text}.json")
+        state = self._state()
+
+        def happened_on(value):
+            return isinstance(value, str) and value[:10] == day_text
+
+        phases = [item for item in state.values() if isinstance(item, dict)]
+        rows = []
+        seen_urls = set()
+        for record in applied:
+            if not isinstance(record, dict):
+                continue
+            url = record.get("url", "")
+            if url and url in seen_urls:
+                continue
+            if url:
+                seen_urls.add(url)
+            progress = state.get(url, {})
+            if not isinstance(progress, dict):
+                progress = {}
+            rows.append({
+                "url": url,
+                "job_title": record.get("job_title", ""),
+                "company": record.get("company", ""),
+                "salary": record.get("salary", ""),
+                "match_score": record.get("match_score"),
+                "contact_at": record.get("timestamp") or progress.get("contact_sent", ""),
+                "greeting_at": progress.get("greeting_sent", ""),
+                "resume_at": progress.get("resume_sent", ""),
+                "workflow_recorded": bool(progress.get("workflow_enabled")),
+            })
+        rows.sort(key=lambda item: item["contact_at"] or "", reverse=True)
+
+        events = [{
+            "type": "contact",
+            "time": item["contact_at"],
+            "url": item["url"],
+            "job_title": item["job_title"],
+            "company": item["company"],
+        } for item in rows]
+        for url, progress in state.items():
+            if not isinstance(progress, dict):
+                continue
+            for phase, event_type in (("greeting_sent", "greeting"),
+                                      ("resume_sent", "resume")):
+                if happened_on(progress.get(phase)):
+                    events.append({
+                        "type": event_type,
+                        "time": progress[phase],
+                        "url": url,
+                        "job_title": progress.get("job_title", ""),
+                        "company": progress.get("company", ""),
+                    })
+        events.sort(key=lambda item: item["time"] or "", reverse=True)
+
+        return {
+            "date": day_text,
+            "totals": {
+                "matched": len(matched),
+                "contacted": len(rows),
+                "greetings_sent": sum(happened_on(item.get("greeting_sent")) for item in phases),
+                "resumes_sent": sum(happened_on(item.get("resume_sent")) for item in phases),
+                "pending_resumes_from_contacts": sum(
+                    bool(item["greeting_at"]) and not item["resume_at"] for item in rows
+                ),
+            },
+            "events": events,
+            "records": rows,
         }
