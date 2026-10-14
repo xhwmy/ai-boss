@@ -4,6 +4,7 @@
 """
 
 import json
+import math
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -157,3 +158,21 @@ def validate_config(config: dict):
     search = config["search"]
     if not search.get("keyword"):
         raise ValueError("搜索关键词不能为空！请设置 config.json 中的 search.keyword")
+    floors = search.get("salary_floor_by_city", {})
+    if not isinstance(floors, dict):
+        raise ValueError("城市最低月薪必须是 {城市: K数值} 对象")
+    for city, value in floors.items():
+        if not isinstance(city, str) or not city.strip():
+            raise ValueError("最低月薪的城市名称不能为空")
+        if isinstance(value, bool):
+            raise ValueError(f"{city} 的最低月薪必须是数字")
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{city} 的最低月薪必须是数字") from None
+        if not math.isfinite(number) or not 0 < number <= 100:
+            raise ValueError(f"{city} 的最低月薪应在 0–100K 之间")
+    excluded = search.get("excluded_title_keywords", [])
+    if not isinstance(excluded, list) or any(
+            not isinstance(word, str) or not word.strip() for word in excluded):
+        raise ValueError("排除岗位标题关键词必须是非空文本列表")

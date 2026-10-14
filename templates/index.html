@@ -253,6 +253,18 @@
         </div>
         <div class="form-row">
           <div class="form-group">
+            <label>城市最低月薪（K，逗号分隔）</label>
+            <input id="cfg_salary_floors" placeholder="例如：北京:8，石家庄:6，天津:6">
+            <div style="font-size:12px;color:var(--text2)">按岗位标注的最低月薪比较；薪资不明时不自动沟通。留空则不限制。</div>
+          </div>
+          <div class="form-group">
+            <label>排除岗位标题关键词（逗号分隔）</label>
+            <input id="cfg_excluded_titles" placeholder="例如：内容审核，兼职，暖通">
+            <div style="font-size:12px;color:var(--text2)">标题含这些词的岗位直接跳过，不进入 AI 评分。</div>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
             <label>匹配阈值（分）<span id="thresholdVal">60</span></label>
             <input id="cfg_threshold" type="range" value="60" min="0" max="100"
                    oninput="document.getElementById('thresholdVal').textContent=this.value">
@@ -531,12 +543,24 @@ async function setMode(newMode) {
 
 // ==================== 保存配置 ====================
 async function saveConfig() {
+  const salaryFloors = {};
+  const floorText = document.getElementById('cfg_salary_floors').value.trim();
+  for (const part of floorText.split(/[,，]/).map(s => s.trim()).filter(Boolean)) {
+    const match = part.match(/^(.+?)[:：]\s*(\d+(?:\.\d+)?)\s*[Kk]?$/);
+    if (!match || Number(match[2]) <= 0 || Number(match[2]) > 100) {
+      showToast('最低月薪格式应为：北京:8，石家庄:6', 'error');
+      return;
+    }
+    salaryFloors[match[1].trim()] = Number(match[2]);
+  }
   const conf = {
     search: {
       keyword: document.getElementById('cfg_keyword').value.trim(),
       secondary_keywords: document.getElementById('cfg_secondary').value.split(/[,，]/).map(s => s.trim()).filter(Boolean),
       city: document.getElementById('cfg_city').value.trim(),
       page_count: parseInt(document.getElementById('cfg_pages').value) || 5,
+      salary_floor_by_city: salaryFloors,
+      excluded_title_keywords: document.getElementById('cfg_excluded_titles').value.split(/[,，]/).map(s => s.trim()).filter(Boolean),
       filters: {
         experience: document.getElementById('cfg_filter_exp').value,
         education: document.getElementById('cfg_filter_edu').value,
@@ -695,6 +719,9 @@ function updateStatus(payload) {
         kw.value = c.search.keyword || '';
         document.getElementById('cfg_city').value = c.search.city || '';
         document.getElementById('cfg_pages').value = c.search.page_count || 5;
+        document.getElementById('cfg_salary_floors').value = Object.entries(c.search.salary_floor_by_city || {})
+          .map(([city, floor]) => `${city}:${floor}`).join('，');
+        document.getElementById('cfg_excluded_titles').value = (c.search.excluded_title_keywords || []).join('，');
         if (c.search.secondary_keywords) {
           document.getElementById('cfg_secondary').value = c.search.secondary_keywords.join(',');
         }

@@ -143,6 +143,8 @@ class ApplicationLedger:
                 "url": url,
                 "job_title": record.get("job_title", ""),
                 "company": record.get("company", ""),
+                "company_size": record.get("company_size", ""),
+                "city": record.get("city", ""),
                 "salary": record.get("salary", ""),
                 "match_score": record.get("match_score"),
                 "contact_at": record.get("timestamp") or progress.get("contact_sent", ""),

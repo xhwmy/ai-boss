@@ -23,6 +23,7 @@ from config import (
 from browser import BossBrowser
 from city_search import page_allocations, resolve_city_targets
 from application_ledger import ApplicationLedger
+from job_filters import minimum_monthly_salary_k, salary_floor_for_city
 from submission import SubmissionWorkflow, greeting_for
 from analyzer import JDAnalyzer
 import database  # ⭐ v3.0 超预期岗位收藏（SQLite）
@@ -221,9 +222,12 @@ class BossEngine:
                     merged[section].update(new_config[section])
             targets = resolve_city_targets(merged["search"].get("city", ""))
             page_allocations(merged["search"].get("page_count", 5), len(targets))
+            validate_config(merged)
+            temp_path = config_path.with_suffix(".tmp")
+            temp_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+            os.replace(temp_path, config_path)
             self._config = merged
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(merged, f, ensure_ascii=False, indent=2)
         self.add_log("info", f"✅ 配置已更新")
 
     def update_resume(self, new_resume: dict):
@@ -444,7 +448,11 @@ class BossEngine:
         years = int(self._resume.get("years_of_experience", 0) or 0)
 
         if not result.get("experience"):
-            if "在校" in status or "应届" in status or years == 0:
+            # Zero *full years* can still mean the person already has a job.
+            # Do not silently narrow an employed graduate to student openings.
+            student_status = ("在校" in status or "应届" in status) and not (
+                "现任" in status or "在职" in status)
+            if student_status or (years == 0 and not status):
                 result["experience"] = "在校/应届"
         if not result.get("education") and edu:
             result["education"] = edu
@@ -496,6 +504,7 @@ class BossEngine:
         if self._status == self.IDLE:
             return False, "引擎未运行"
         self._stop_event.set()
+        self._pause_event.set()  # A paused worker must wake to observe stop.
         self._set_status(self.STOPPING, "正在停止...")
         self.add_log("warn", "🛑 正在停止引擎...")
         return True, "正在停止"
@@ -924,6 +933,29 @@ class BossEngine:
             self._browser.back_to_search()
             return
 
+        floor_setting = salary_floor_for_city(
+            self._config.get("search", {}).get("salary_floor_by_city", {}),
+            jd_info.get("city", ""), city_name)
+        if floor_setting:
+            floor_city, floor_k = floor_setting
+            monthly_min_k = minimum_monthly_salary_k(jd_info.get("salary", ""))
+            if monthly_min_k is None or monthly_min_k < floor_k:
+                reason = (f"月薪无法核对，未达到{floor_city}最低月薪筛选条件"
+                          if monthly_min_k is None else
+                          f"月薪下限 {monthly_min_k:g}K 低于{floor_city}设置的 {floor_k:g}K")
+                self._stats["skipped"] += 1
+                self.add_log("info", f"  ⏭️ 跳过 {job_title}（{reason}）")
+                save_result("skipped", {
+                    "job_title": job_title,
+                    "company": jd_info.get("company", ""),
+                    "city": jd_info.get("city", ""),
+                    "salary": jd_info.get("salary", ""),
+                    "url": job_url,
+                    "reason": reason,
+                })
+                self._browser.back_to_search()
+                return
+
         # ── ⭐ v3.1 劳务外包关键词预检（零 AI 成本）：命中直接拉黑跳过，省一次 AI 调用 ──
         if bl_cfg["enabled"] and blacklist.match_outsourcing(
                 jd_text, bl_cfg["outsourcing_keywords"]):
@@ -1085,6 +1117,12 @@ class BossEngine:
                 "financing": jd_info.get("financing", ""),
                 "listed": jd_info.get("listed"),
                 "salary": jd_info.get("salary", ""),
+                "city": jd_info.get("city", ""),
+                "industry": jd_info.get("industry", ""),
+                "education": jd_info.get("education", ""),
+                "experience": jd_info.get("experience", ""),
+                "job_type": jd_info.get("job_type", ""),
+                "match_level": match_level,
                 "match_score": score,
                 "reason": decision.get("reason", ""),
                 "url": job_url,

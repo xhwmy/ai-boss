@@ -11,7 +11,7 @@ from resume_upload import get_uploaded_meta
 
 CHAT_URL = "https://www.zhipin.com/web/geek/chat"
 def greeting_for(resume, record):
-    """Use only skills actually present in the user's résumé and this JD."""
+    """Mention one concrete résumé strength, then relevant JD skill overlap."""
     title = (record.get("job_title") or "这个岗位").strip()[:35]
     jd = (record.get("jd_text") or "").lower()
     ordered = ["Linux", "Docker", "K8S", "Nginx", "MySQL", "Oracle", "Shell",
@@ -20,13 +20,26 @@ def greeting_for(resume, record):
     for values in resume.get("skills", {}).values():
         if isinstance(values, list):
             skills.update(str(x).lower() for x in values)
-    matched = [x for x in ordered if x.lower() in jd and x.lower() in skills][:3]
+    matched = [x for x in ordered if x.lower() in jd and x.lower() in skills][:2]
     name = (resume.get("name") or "求职者").strip()
-    experience = (f"我目前从事软件技术工作，也做过{'、'.join(matched)}相关的部署或运维。"
-                  if matched else "我目前从事软件技术工作，希望结合岗位要求进一步介绍相关经历。")
-    return (f"您好，我是{name}，想应聘贵司的{title}。"
-            f"{experience}"
-            "希望有机会进一步沟通，谢谢！")
+    highlights = resume.get("highlights") or []
+    if not isinstance(highlights, list):
+        highlights = []
+    candidates = [" ".join(str(item).split()).strip("。； ") for item in highlights
+                  if isinstance(item, str) and item.strip()]
+    # Prefer a concrete project/operations result over a generic skill list.
+    proof = next((item for item in candidates if any(word in item.lower() for word in
+                  ("独立", "部署", "监控", "自动化", "ci/cd", "运维"))), "")
+    if proof:
+        proof = proof[:75].rstrip("、，； ")
+        advantage = f"我的相关实践：{proof}。"
+    elif matched:
+        advantage = f"我的简历包含{'、'.join(matched)}相关技能。"
+    else:
+        advantage = "希望结合我的项目经历进一步交流。"
+    extra = [skill for skill in matched if skill.lower() not in proof.lower()]
+    overlap = f"也熟悉岗位提到的{'、'.join(extra)}。" if proof and extra else ""
+    return f"您好，我是{name}，想应聘贵司的{title}。{advantage}{overlap}期待进一步沟通，谢谢！"
 
 
 class SubmissionWorkflow:

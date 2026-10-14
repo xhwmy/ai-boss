@@ -27,7 +27,7 @@
   .metric:nth-child(2) strong,.metric:nth-child(4) strong { color:var(--green); }
   .metric span { color:var(--muted); font-size:12px; }
   .scroll { overflow-x:auto; }
-  table { width:100%; border-collapse:collapse; min-width:730px; }
+  table { width:100%; border-collapse:collapse; min-width:980px; }
   th,td { text-align:left; padding:10px 8px; border-bottom:1px solid #eceff1; vertical-align:top; }
   th { color:var(--muted); font-size:12px; font-weight:600; white-space:nowrap; }
   tr:last-child td { border-bottom:0; }
@@ -75,7 +75,7 @@
 
   <div class="card">
     <h2>当天联系岗位及后续状态</h2>
-    <div class="scroll"><table><thead><tr><th>沟通时间</th><th>岗位</th><th>公司</th><th>介绍消息</th><th>PDF</th></tr></thead><tbody id="records"></tbody></table></div>
+    <div class="scroll"><table><thead><tr><th>沟通时间</th><th>岗位</th><th>公司</th><th>城市</th><th>月薪</th><th>规模</th><th>匹配分</th><th>介绍消息</th><th>PDF</th></tr></thead><tbody id="records"></tbody></table></div>
     <div id="recordsEmpty" class="empty" hidden>这一天没有已保存的沟通记录</div>
   </div>
 </div>
@@ -137,6 +137,10 @@ function renderRecords(items) {
     addTextCell(row, displayTime(item.contact_at));
     addJobCell(row, item);
     addTextCell(row, item.company);
+    addTextCell(row, item.city);
+    addTextCell(row, item.salary);
+    addTextCell(row, item.company_size);
+    addTextCell(row, item.match_score == null ? '' : String(item.match_score));
     addTextCell(row, phaseLabel(item.greeting_at, item.workflow_recorded));
     addTextCell(row, phaseLabel(item.resume_at, item.workflow_recorded));
   }

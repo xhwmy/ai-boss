@@ -8,6 +8,8 @@
     ],
     "city": "<意向城市>",
     "page_count": 20,
+    "excluded_title_keywords": ["内容审核", "内容审查", "兼职", "暖通", "机电", "楼宇"],
+    "salary_floor_by_city": {},
     "filters": {
       "experience": "",
       "education": "",
