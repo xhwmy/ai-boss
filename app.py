@@ -37,6 +37,7 @@ def _keep_awake_while_running():
 
 # ⭐ v3.0 初始化数据库（幂等）
 database.init_db()
+database.import_legacy_history()
 
 
 # ==================== 页面路由 ====================
@@ -81,7 +82,11 @@ def update_config():
         return jsonify({"success": False, "error": "请求数据为空"}), 400
     try:
         engine.update_config(data)
-        return jsonify({"success": True})
+        return jsonify({"success": True, "config": engine.config,
+                        "saved_at": datetime.now().isoformat(timespec="seconds"),
+                        "applies_when": "城市列表和页数下次启动；薪资条件用于后续处理的岗位"})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -202,6 +207,11 @@ def api_history():
     except (TypeError, ValueError):
         return jsonify({"error": "日期格式应为 YYYY-MM-DD"}), 400
     return jsonify(ApplicationLedger().daily_report(selected))
+
+
+@app.route("/api/history/dates")
+def api_history_dates():
+    return jsonify(database.history_dates())
 
 
 @app.route("/api/logs")

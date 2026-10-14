@@ -23,7 +23,7 @@ from config import (
 from browser import BossBrowser
 from city_search import page_allocations, resolve_city_targets
 from application_ledger import ApplicationLedger
-from job_filters import minimum_monthly_salary_k, salary_floor_for_city
+from job_filters import minimum_monthly_salary_k, salary_floor_for_city, salary_range_for_city
 from submission import SubmissionWorkflow, greeting_for
 from analyzer import JDAnalyzer
 import database  # ⭐ v3.0 超预期岗位收藏（SQLite）
@@ -220,6 +220,13 @@ class BossEngine:
             for section in ["search", "ai", "application", "browser", "scoring", "blacklist"]:
                 if section in new_config:
                     merged[section].update(new_config[section])
+            if "salary_ranges_by_city" in new_config.get("search", {}):
+                rows = merged["search"]["salary_ranges_by_city"]
+                if not isinstance(rows, list):
+                    raise ValueError("地区薪资范围必须是多行配置")
+                merged["search"]["city"] = "，".join(str(row.get("city") or "").strip()
+                                                 for row in rows if isinstance(row, dict))
+                merged["search"]["salary_floor_by_city"] = {}
             targets = resolve_city_targets(merged["search"].get("city", ""))
             page_allocations(merged["search"].get("page_count", 5), len(targets))
             validate_config(merged)
@@ -625,6 +632,13 @@ class BossEngine:
                 if self._stop_event.is_set():
                     break
                 self.add_log("info", f"🌆 城市 {city_name}：最多搜索 {city_pages} 批")
+                selected_range = salary_range_for_city(
+                    self._config["search"].get("salary_ranges_by_city"), city_name)
+                if selected_range:
+                    _, min_k, max_k = selected_range
+                    shown_range = (f"{min_k:g}–{max_k:g}K" if max_k is not None
+                                   else f"{min_k:g}K 以上")
+                    self.add_log("info", f"💰 {city_name}：岗位月薪下限须在 {shown_range}")
                 for attempt in range(3):
                     if self._stop_event.is_set():
                         break
@@ -709,7 +723,11 @@ class BossEngine:
         max_pages = page_limit or search_cfg.get("page_count", 5)
 
         # ── 网页内置筛选（经验/学历/薪资/类型），未设置的自动从简历推导 ──
-        filters = search_cfg.get("filters", {})
+        filters = dict(search_cfg.get("filters", {}))
+        if search_cfg.get("salary_ranges_by_city"):
+            # The BOSS dropdown is global and coarse; exact per-city ranges
+            # are checked from each job's displayed monthly pay instead.
+            filters["salary"] = ""
         if search_cfg.get("auto_filters_from_resume", False):
             filters = self._merge_auto_filters(filters)
         active_filters = {k: v for k, v in filters.items() if v and v != "不限"}
@@ -933,15 +951,21 @@ class BossEngine:
             self._browser.back_to_search()
             return
 
-        floor_setting = salary_floor_for_city(
+        ranges = self._config.get("search", {}).get("salary_ranges_by_city")
+        range_setting = salary_range_for_city(ranges, jd_info.get("city", ""), city_name)
+        floor_setting = (None if ranges is not None else salary_floor_for_city(
             self._config.get("search", {}).get("salary_floor_by_city", {}),
-            jd_info.get("city", ""), city_name)
-        if floor_setting:
-            floor_city, floor_k = floor_setting
+            jd_info.get("city", ""), city_name))
+        if range_setting or floor_setting:
+            floor_city, floor_k = range_setting[:2] if range_setting else floor_setting
+            ceiling_k = range_setting[2] if range_setting else None
             monthly_min_k = minimum_monthly_salary_k(jd_info.get("salary", ""))
-            if monthly_min_k is None or monthly_min_k < floor_k:
+            if (monthly_min_k is None or monthly_min_k < floor_k or
+                    (ceiling_k is not None and monthly_min_k > ceiling_k)):
                 reason = (f"月薪无法核对，未达到{floor_city}最低月薪筛选条件"
                           if monthly_min_k is None else
+                          f"月薪下限 {monthly_min_k:g}K 不在{floor_city}设置的 "
+                          f"{floor_k:g}K–{ceiling_k:g}K 内" if ceiling_k is not None else
                           f"月薪下限 {monthly_min_k:g}K 低于{floor_city}设置的 {floor_k:g}K")
                 self._stats["skipped"] += 1
                 self.add_log("info", f"  ⏭️ 跳过 {job_title}（{reason}）")
@@ -1033,6 +1057,7 @@ class BossEngine:
         if match_level in ("超预期", "符合预期"):
             try:
                 save_result("matched", detail_record)
+                database.record_history_match(detail_record)
             except Exception as e:
                 self.add_log("warn", f"  ⚠️ 保存详细结果失败: {e}")
             listed_txt = ""

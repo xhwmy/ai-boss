@@ -20,6 +20,8 @@
   button:hover { background:#f6f8fa; }
   input[type=date] { border:1px solid var(--line); border-radius:6px; padding:7px 10px; min-height:38px; }
   .picker-left { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .available-days { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  .available-days button.active { background:var(--blue); color:#fff; border-color:var(--blue); }
   .note { color:var(--muted); font-size:12px; margin:10px 0 0; }
   .cards { display:grid; grid-template-columns:repeat(5,minmax(130px,1fr)); gap:10px; margin-top:16px; }
   .metric { background:#f7f8fa; border-radius:8px; padding:14px; }
@@ -57,6 +59,7 @@
       </div>
       <span class="muted" id="refreshState">读取已保存的记录中…</span>
     </div>
+    <div id="availableDays" class="available-days" aria-label="有历史记录的日期"></div>
     <div class="cards">
       <div class="metric"><strong id="matched">0</strong><span>当天匹配记录</span></div>
       <div class="metric"><strong id="contacted">0</strong><span>当天确认沟通</span></div>
@@ -164,7 +167,10 @@ async function loadHistory() {
     setText('pending', totals.pending_resumes_from_contacts || 0);
     renderEvents(data.events || []);
     renderRecords(data.records || []);
-    setText('refreshState', '已从本地历史记录读取 · 每 30 秒更新');
+    document.querySelectorAll('#availableDays button').forEach(button => {
+      button.classList.toggle('active', button.textContent.startsWith(day));
+    });
+    setText('refreshState', '已从本地 SQLite 读取 · 每 30 秒更新');
     history.replaceState(null, '', '/history?date=' + encodeURIComponent(day));
   } catch (error) {
     if (requestId === historyRequestId) setText('refreshState', '读取失败：' + error.message);
@@ -182,9 +188,31 @@ function selectToday() {
   document.getElementById('historyDate').value = localDate();
   loadHistory();
 }
-const requested = new URLSearchParams(location.search).get('date');
-document.getElementById('historyDate').value = /^\d{4}-\d{2}-\d{2}$/.test(requested || '') ? requested : localDate();
-loadHistory();
+async function initializeHistory() {
+  const requested = new URLSearchParams(location.search).get('date');
+  const input = document.getElementById('historyDate');
+  try {
+    const response = await fetch('/api/history/dates', { cache:'no-store' });
+    if (!response.ok) throw new Error('日期列表读取失败');
+    const dates = await response.json();
+    const area = document.getElementById('availableDays');
+    area.replaceChildren();
+    for (const item of dates.slice(0, 30)) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = `${item.day} · 沟通 ${item.contacted}`;
+      button.onclick = () => { input.value = item.day; loadHistory(); };
+      area.appendChild(button);
+    }
+    input.value = /^\d{4}-\d{2}-\d{2}$/.test(requested || '')
+      ? requested : (dates[0]?.day || localDate());
+  } catch (error) {
+    input.value = /^\d{4}-\d{2}-\d{2}$/.test(requested || '') ? requested : localDate();
+    setText('refreshState', error.message);
+  }
+  loadHistory();
+}
+initializeHistory();
 setInterval(loadHistory, 30000);
 </script>
 </body>

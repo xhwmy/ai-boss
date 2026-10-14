@@ -1,12 +1,18 @@
 """持久化的投递记录与额度检查。"""
 
 import json
+import logging
 import os
+import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from config import ROOT_DIR
+import database
 from utils import save_result
+
+
+logger = logging.getLogger(__name__)
 
 
 class ApplicationLedger:
@@ -57,6 +63,10 @@ class ApplicationLedger:
         if self.was_sent(data.get("url")):
             return False
         save_result("applied", dict(data))
+        try:
+            database.record_history_contact(data)
+        except sqlite3.Error:
+            logger.exception("SQLite 历史记录写入失败；下次启动会从 JSON 恢复")
         self.mark_phase(data, "contact_sent")
         self.mark_phase(data, "workflow_enabled")
         return True
@@ -84,6 +94,10 @@ class ApplicationLedger:
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, self.state_path)
+        try:
+            database.record_history_event(url, name, item[name])
+        except sqlite3.Error:
+            logger.exception("SQLite 动作记录写入失败；下次启动会从 JSON 恢复")
 
     def pending(self):
         """Jobs contacted by this version and still missing introduction or PDF."""
@@ -112,81 +126,5 @@ class ApplicationLedger:
         }
 
     def daily_report(self, day: date):
-        """Build a date report from durable contact and workflow records.
-
-        Contact counts use the day the BOSS conversation was confirmed. Message
-        and PDF counts use their own confirmed send dates, which can be later.
-        """
-        day_text = day.isoformat()
-        applied = self._read(self.results_dir / f"applied_{day_text}.json")
-        matched = self._read(self.results_dir / f"matched_{day_text}.json")
-        state = self._state()
-
-        def happened_on(value):
-            return isinstance(value, str) and value[:10] == day_text
-
-        phases = [item for item in state.values() if isinstance(item, dict)]
-        rows = []
-        seen_urls = set()
-        for record in applied:
-            if not isinstance(record, dict):
-                continue
-            url = record.get("url", "")
-            if url and url in seen_urls:
-                continue
-            if url:
-                seen_urls.add(url)
-            progress = state.get(url, {})
-            if not isinstance(progress, dict):
-                progress = {}
-            rows.append({
-                "url": url,
-                "job_title": record.get("job_title", ""),
-                "company": record.get("company", ""),
-                "company_size": record.get("company_size", ""),
-                "city": record.get("city", ""),
-                "salary": record.get("salary", ""),
-                "match_score": record.get("match_score"),
-                "contact_at": record.get("timestamp") or progress.get("contact_sent", ""),
-                "greeting_at": progress.get("greeting_sent", ""),
-                "resume_at": progress.get("resume_sent", ""),
-                "workflow_recorded": bool(progress.get("workflow_enabled")),
-            })
-        rows.sort(key=lambda item: item["contact_at"] or "", reverse=True)
-
-        events = [{
-            "type": "contact",
-            "time": item["contact_at"],
-            "url": item["url"],
-            "job_title": item["job_title"],
-            "company": item["company"],
-        } for item in rows]
-        for url, progress in state.items():
-            if not isinstance(progress, dict):
-                continue
-            for phase, event_type in (("greeting_sent", "greeting"),
-                                      ("resume_sent", "resume")):
-                if happened_on(progress.get(phase)):
-                    events.append({
-                        "type": event_type,
-                        "time": progress[phase],
-                        "url": url,
-                        "job_title": progress.get("job_title", ""),
-                        "company": progress.get("company", ""),
-                    })
-        events.sort(key=lambda item: item["time"] or "", reverse=True)
-
-        return {
-            "date": day_text,
-            "totals": {
-                "matched": len(matched),
-                "contacted": len(rows),
-                "greetings_sent": sum(happened_on(item.get("greeting_sent")) for item in phases),
-                "resumes_sent": sum(happened_on(item.get("resume_sent")) for item in phases),
-                "pending_resumes_from_contacts": sum(
-                    bool(item["greeting_at"]) and not item["resume_at"] for item in rows
-                ),
-            },
-            "events": events,
-            "records": rows,
-        }
+        """Read the persistent SQLite date report."""
+        return database.history_report(day)

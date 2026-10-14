@@ -1,11 +1,13 @@
 """
 数据库模块
 
-使用 SQLite 存储「超预期岗位」历史记录 与「低质量岗位黑名单」，供控制面板新页面（/starred、/blacklist）查看。
-数据库文件位于 data/boss_jobs.db，均按岗位网址去重（重复记录自动更新）。
+使用 SQLite 存储投递历史、超预期岗位与低质量岗位黑名单。
+数据库文件位于 data/boss_jobs.db；按岗位网址去重。
 """
 
+import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -65,9 +67,178 @@ def init_db():
                 created_at   TEXT NOT NULL DEFAULT ''    -- 拉黑时间
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS history_contacts (
+                url TEXT PRIMARY KEY,
+                job_title TEXT NOT NULL DEFAULT '',
+                company TEXT NOT NULL DEFAULT '',
+                company_size TEXT NOT NULL DEFAULT '',
+                city TEXT NOT NULL DEFAULT '',
+                salary TEXT NOT NULL DEFAULT '',
+                match_score INTEGER,
+                contact_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS history_events (
+                url TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                happened_at TEXT NOT NULL,
+                PRIMARY KEY (url, event_type)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS history_matches (
+                day TEXT NOT NULL,
+                url TEXT NOT NULL,
+                PRIMARY KEY (day, url)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_history_contact_date ON history_contacts(contact_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_history_event_date ON history_events(happened_at)")
         conn.commit()
     finally:
         conn.close()
+
+
+def record_history_contact(record):
+    """Persist a confirmed BOSS contact. Reimporting JSON does not duplicate it."""
+    url = str(record.get("url") or "").strip()
+    if not url:
+        return
+    contact_at = str(record.get("timestamp") or datetime.now().isoformat(timespec="seconds"))
+    with closing(_get_conn()) as conn, conn:
+        conn.execute("""
+            INSERT INTO history_contacts
+                (url, job_title, company, company_size, city, salary, match_score, contact_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(url) DO UPDATE SET
+                job_title=excluded.job_title, company=excluded.company,
+                company_size=excluded.company_size, city=excluded.city,
+                salary=excluded.salary, match_score=excluded.match_score
+        """, (url, record.get("job_title") or "", record.get("company") or "",
+              record.get("company_size") or "", record.get("city") or "",
+              record.get("salary") or "", record.get("match_score"), contact_at))
+
+
+def record_history_event(url, event_type, happened_at):
+    if not url or not happened_at:
+        return
+    with closing(_get_conn()) as conn, conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO history_events (url, event_type, happened_at)
+            VALUES (?, ?, ?)
+        """, (url, event_type, happened_at))
+
+
+def record_history_match(record):
+    url = str(record.get("url") or "").strip()
+    stamp = str(record.get("timestamp") or datetime.now().isoformat(timespec="seconds"))
+    if not url:
+        return
+    with closing(_get_conn()) as conn, conn:
+        conn.execute("INSERT OR IGNORE INTO history_matches (day, url) VALUES (?, ?)",
+                     (stamp[:10], url))
+
+
+def import_legacy_history():
+    """Backfill older JSON results and phase state; safe to run after every restart."""
+    results = ROOT_DIR / "results"
+    if not results.exists():
+        return
+    for prefix, writer in (("applied", record_history_contact),
+                           ("matched", record_history_match)):
+        for path in results.glob(f"{prefix}_*.json"):
+            try:
+                records = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(records, list):
+                for record in records:
+                    if isinstance(record, dict):
+                        if not record.get("timestamp"):
+                            record = {**record, "timestamp": path.stem[-10:]}
+                        writer(record)
+    state_path = results / "submission_state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    if isinstance(state, dict):
+        for url, phases in state.items():
+            if isinstance(phases, dict):
+                for name in ("contact_sent", "workflow_enabled", "greeting_sent", "resume_sent"):
+                    if phases.get(name):
+                        record_history_event(url, name, phases[name])
+
+
+def history_dates():
+    with closing(_get_conn()) as conn, conn:
+        rows = conn.execute("""
+            SELECT dates.day,
+                   (SELECT COUNT(*) FROM history_contacts c
+                    WHERE substr(c.contact_at,1,10)=dates.day) AS contacted
+            FROM (
+                SELECT substr(contact_at,1,10) AS day FROM history_contacts
+                UNION SELECT substr(happened_at,1,10) FROM history_events
+                UNION SELECT day FROM history_matches
+            ) dates
+            WHERE dates.day != ''
+            ORDER BY dates.day DESC
+        """).fetchall()
+        return [dict(row) for row in rows]
+
+
+def history_report(day):
+    day_text = day.isoformat()
+    with closing(_get_conn()) as conn, conn:
+        matches = conn.execute("SELECT COUNT(*) FROM history_matches WHERE day=?", (day_text,)).fetchone()[0]
+        contacts = [dict(row) for row in conn.execute("""
+            SELECT c.*, g.happened_at AS greeting_at, r.happened_at AS resume_at,
+                   w.happened_at AS workflow_at
+            FROM history_contacts c
+            LEFT JOIN history_events g ON g.url=c.url AND g.event_type='greeting_sent'
+            LEFT JOIN history_events r ON r.url=c.url AND r.event_type='resume_sent'
+            LEFT JOIN history_events w ON w.url=c.url AND w.event_type='workflow_enabled'
+            WHERE substr(c.contact_at,1,10)=? ORDER BY c.contact_at DESC
+        """, (day_text,)).fetchall()]
+        event_rows = [dict(row) for row in conn.execute("""
+            SELECT e.url, e.event_type, e.happened_at,
+                   COALESCE(c.job_title, '') AS job_title,
+                   COALESCE(c.company, '') AS company
+            FROM history_events e LEFT JOIN history_contacts c ON c.url=e.url
+            WHERE substr(e.happened_at,1,10)=?
+              AND e.event_type IN ('greeting_sent','resume_sent')
+            ORDER BY e.happened_at DESC
+        """, (day_text,)).fetchall()]
+    records = [{
+        "url": row["url"], "job_title": row["job_title"],
+        "company": row["company"], "company_size": row["company_size"],
+        "city": row["city"], "salary": row["salary"],
+        "match_score": row["match_score"], "contact_at": row["contact_at"],
+        "greeting_at": row["greeting_at"] or "", "resume_at": row["resume_at"] or "",
+        "workflow_recorded": bool(row["workflow_at"]),
+    } for row in contacts]
+    events = [{
+        "type": "contact", "time": row["contact_at"], "url": row["url"],
+        "job_title": row["job_title"], "company": row["company"],
+    } for row in contacts]
+    events.extend({
+        "type": "greeting" if row["event_type"] == "greeting_sent" else "resume",
+        "time": row["happened_at"], "url": row["url"],
+        "job_title": row["job_title"], "company": row["company"],
+    } for row in event_rows)
+    events.sort(key=lambda item: item["time"], reverse=True)
+    return {
+        "date": day_text,
+        "totals": {
+            "matched": matches, "contacted": len(contacts),
+            "greetings_sent": sum(row["event_type"] == "greeting_sent" for row in event_rows),
+            "resumes_sent": sum(row["event_type"] == "resume_sent" for row in event_rows),
+            "pending_resumes_from_contacts": sum(bool(row["greeting_at"]) and not row["resume_at"] for row in contacts),
+        },
+        "events": events, "records": records,
+    }
 
 
 def save_starred_job(job: dict):

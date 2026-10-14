@@ -191,6 +191,7 @@
     </div>
     <div style="display:flex;align-items:center;gap:10px">
       <a class="btn btn-outline btn-sm" href="/history" title="按日期查看已保存的沟通与简历发送记录">📅 历史记录</a>
+      <a class="btn btn-outline btn-sm" href="https://www.gsxt.gov.cn/" target="_blank" rel="noopener noreferrer" title="国家企业信用信息公示系统；可用工商全称或统一社会信用代码核对年报与出资信息">企业工商核验</a>
       <a class="btn btn-outline btn-sm" href="/blacklist" target="_blank" title="查看低质量岗位黑名单（永久/短期/观察 三级，命中直接跳过）">🚫 黑名单</a>
       <a class="btn btn-outline btn-sm" href="/starred" target="_blank" title="查看历史超预期岗位（AI 评分 ≥ 超预期阈值 自动收藏）">⭐ 超预期岗位</a>
       <div id="statusBadge" class="status-badge status-idle">
@@ -227,7 +228,7 @@
       </div>
 
       <!-- 配置面板 -->
-      <div class="card">
+      <div class="card" id="configPanel">
         <div class="card-title">⚙️ 搜索配置
           <span style="font-size:12px;color:var(--text2);font-weight:normal;margin-left:8px">修改后点击保存</span>
         </div>
@@ -243,8 +244,10 @@
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label>城市（逗号分隔，留空不限）</label>
-            <input id="cfg_city" value="" placeholder="例如：北京，石家庄，天津">
+            <label>地区与期望月薪（K）</label>
+            <div id="regionRows"></div>
+            <button class="btn btn-outline btn-sm" type="button" onclick="addRegionRow()">＋ 添加地区</button>
+            <div style="font-size:12px;color:var(--text2);margin-top:5px">每行一个城市；按岗位标注的月薪下限筛选。未填写最高值时不限上限，薪资不明则跳过。</div>
           </div>
           <div class="form-group">
             <label>搜索总页数（多城市平均分配）</label>
@@ -252,11 +255,6 @@
           </div>
         </div>
         <div class="form-row">
-          <div class="form-group">
-            <label>城市最低月薪（K，逗号分隔）</label>
-            <input id="cfg_salary_floors" placeholder="例如：北京:8，石家庄:6，天津:6">
-            <div style="font-size:12px;color:var(--text2)">按岗位标注的最低月薪比较；薪资不明时不自动沟通。留空则不限制。</div>
-          </div>
           <div class="form-group">
             <label>排除岗位标题关键词（逗号分隔）</label>
             <input id="cfg_excluded_titles" placeholder="例如：内容审核，兼职，暖通">
@@ -333,7 +331,7 @@
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label>💰 薪资筛选</label>
+            <label>💰 网页薪资筛选（填写地区薪资行时自动忽略）</label>
             <select id="cfg_filter_salary">
               <option value="">不限</option>
               <option>3K以下</option>
@@ -370,7 +368,8 @@
           </div>
         </div>
         <div class="form-actions">
-          <button class="btn btn-primary btn-sm" onclick="saveConfig()">💾 保存配置</button>
+          <button class="btn btn-primary btn-sm" id="saveConfigButton" onclick="saveConfig()">💾 保存配置</button>
+          <span id="configSaveState" role="status" style="font-size:12px;color:var(--text2);margin-left:8px">正在读取已保存设置…</span>
         </div>
       </div>
     </div>
@@ -541,25 +540,66 @@ async function setMode(newMode) {
   }
 }
 
+// ==================== 地区薪资配置 ====================
+function addRegionRow(city = '', minK = '', maxK = '') {
+  const area = document.getElementById('regionRows');
+  const row = document.createElement('div');
+  row.className = 'region-row';
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:7px;flex-wrap:wrap';
+  row.innerHTML = `<input class="region-city" aria-label="地区" placeholder="城市，如北京" style="flex:2;min-width:100px">
+    <input class="region-min" type="number" min="0.1" max="100" step="0.1" aria-label="最低月薪K" placeholder="最低 K" style="flex:1;min-width:75px">
+    <input class="region-max" type="number" min="0.1" max="100" step="0.1" aria-label="最高月薪K" placeholder="最高 K" style="flex:1;min-width:75px">
+    <button class="btn btn-outline btn-sm" type="button" aria-label="删除此地区">删除</button>`;
+  row.querySelector('.region-city').value = city;
+  row.querySelector('.region-min').value = minK;
+  row.querySelector('.region-max').value = maxK;
+  row.querySelector('button').onclick = () => { row.remove(); markConfigDirty(); };
+  area.appendChild(row);
+  markConfigDirty();
+}
+function loadRegionRows(search) {
+  document.getElementById('regionRows').replaceChildren();
+  let rows = search.salary_ranges_by_city;
+  if (!Array.isArray(rows)) {
+    const cities = (search.city || '').split(/[,，、;；]/).map(s => s.trim()).filter(Boolean);
+    rows = cities.map(city => ({ city, min_k: (search.salary_floor_by_city || {})[city] || '' }));
+  }
+  for (const row of rows) addRegionRow(row.city || '', row.min_k ?? '', row.max_k ?? '');
+  document.getElementById('configSaveState').textContent = '已读取本机保存的配置';
+}
+function markConfigDirty() {
+  document.getElementById('configSaveState').textContent = '有未保存的修改';
+}
+document.getElementById('configPanel').addEventListener('input', markConfigDirty);
+document.getElementById('configPanel').addEventListener('change', markConfigDirty);
+
 // ==================== 保存配置 ====================
 async function saveConfig() {
-  const salaryFloors = {};
-  const floorText = document.getElementById('cfg_salary_floors').value.trim();
-  for (const part of floorText.split(/[,，]/).map(s => s.trim()).filter(Boolean)) {
-    const match = part.match(/^(.+?)[:：]\s*(\d+(?:\.\d+)?)\s*[Kk]?$/);
-    if (!match || Number(match[2]) <= 0 || Number(match[2]) > 100) {
-      showToast('最低月薪格式应为：北京:8，石家庄:6', 'error');
+  const regions = [];
+  const seen = new Set();
+  for (const row of document.querySelectorAll('#regionRows .region-row')) {
+    const city = row.querySelector('.region-city').value.trim();
+    const minText = row.querySelector('.region-min').value.trim();
+    const maxText = row.querySelector('.region-max').value.trim();
+    const minK = Number(minText), maxK = maxText ? Number(maxText) : null;
+    if (!city || !minText || !Number.isFinite(minK) || minK <= 0 || minK > 100 ||
+        (maxK !== null && (!Number.isFinite(maxK) || maxK < minK || maxK > 100))) {
+      showToast('请检查每行城市和薪资上下限（单位 K）', 'error');
       return;
     }
-    salaryFloors[match[1].trim()] = Number(match[2]);
+    if (seen.has(city)) { showToast('地区不能重复：' + city, 'error'); return; }
+    seen.add(city);
+    regions.push({ city, min_k:minK, max_k:maxK });
   }
+  if (!regions.length) { showToast('请至少添加一个搜索地区', 'error'); return; }
   const conf = {
     search: {
       keyword: document.getElementById('cfg_keyword').value.trim(),
       secondary_keywords: document.getElementById('cfg_secondary').value.split(/[,，]/).map(s => s.trim()).filter(Boolean),
-      city: document.getElementById('cfg_city').value.trim(),
+      city: regions.map(r => r.city).join('，'),
       page_count: parseInt(document.getElementById('cfg_pages').value) || 5,
-      salary_floor_by_city: salaryFloors,
+      salary_ranges_by_city: regions,
+      salary_floor_by_city: {},
       excluded_title_keywords: document.getElementById('cfg_excluded_titles').value.split(/[,，]/).map(s => s.trim()).filter(Boolean),
       filters: {
         experience: document.getElementById('cfg_filter_exp').value,
@@ -583,6 +623,9 @@ async function saveConfig() {
       temp_days: parseInt(document.getElementById('cfg_blacklist_days').value) || 30,
     },
   };
+  const button = document.getElementById('saveConfigButton');
+  button.disabled = true;
+  document.getElementById('configSaveState').textContent = '正在保存并核对…';
   try {
     const r = await fetch('/api/config', {
       method: 'POST',
@@ -590,13 +633,25 @@ async function saveConfig() {
       body: JSON.stringify(conf),
     });
     const d = await r.json();
-    if (d.success) {
-      showToast('✅ 已保存；搜索范围与匹配阈值下次启动生效，沟通额度即时生效', 'success');
+    if (r.ok && d.success) {
+      const check = await fetch('/api/config', { cache:'no-store' });
+      if (!check.ok) throw new Error('保存后读取失败');
+      const saved = await check.json();
+      if (JSON.stringify(saved.search?.salary_ranges_by_city || []) !== JSON.stringify(regions)) {
+        throw new Error('保存后配置与页面不一致');
+      }
+      document.getElementById('configSaveState').textContent =
+        `已保存并核对 · ${new Date().toLocaleTimeString()} · 搜索城市下次启动生效`;
+      showToast('✅ 配置已保存并核对', 'success');
     } else {
+      document.getElementById('configSaveState').textContent = '保存失败：' + (d.error || '未知错误');
       showToast('❌ 保存失败: ' + (d.error || '未知错误'), 'error');
     }
   } catch(e) {
+    document.getElementById('configSaveState').textContent = '保存失败：' + e.message;
     showToast('保存失败: ' + e.message, 'error');
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -717,10 +772,8 @@ function updateStatus(payload) {
       const kw = document.getElementById('cfg_keyword');
       if (!kw.dataset.loaded) {
         kw.value = c.search.keyword || '';
-        document.getElementById('cfg_city').value = c.search.city || '';
+        loadRegionRows(c.search);
         document.getElementById('cfg_pages').value = c.search.page_count || 5;
-        document.getElementById('cfg_salary_floors').value = Object.entries(c.search.salary_floor_by_city || {})
-          .map(([city, floor]) => `${city}:${floor}`).join('，');
         document.getElementById('cfg_excluded_titles').value = (c.search.excluded_title_keywords || []).join('，');
         if (c.search.secondary_keywords) {
           document.getElementById('cfg_secondary').value = c.search.secondary_keywords.join(',');

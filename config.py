@@ -158,6 +158,30 @@ def validate_config(config: dict):
     search = config["search"]
     if not search.get("keyword"):
         raise ValueError("搜索关键词不能为空！请设置 config.json 中的 search.keyword")
+    ranges = search.get("salary_ranges_by_city")
+    if ranges is not None:
+        if not isinstance(ranges, list):
+            raise ValueError("地区薪资范围必须是多行配置")
+        names = set()
+        for row in ranges:
+            if not isinstance(row, dict):
+                raise ValueError("每行地区薪资配置必须包含城市和最低月薪")
+            city = str(row.get("city") or "").strip()
+            if not city:
+                raise ValueError("地区名称不能为空")
+            if city in names:
+                raise ValueError(f"地区重复：{city}")
+            names.add(city)
+            try:
+                low = float(row.get("min_k"))
+                high = (float(row["max_k"]) if row.get("max_k") not in (None, "")
+                        else None)
+            except (TypeError, ValueError):
+                raise ValueError(f"{city} 的薪资上下限必须是数字") from None
+            if not math.isfinite(low) or not 0 < low <= 100:
+                raise ValueError(f"{city} 的最低月薪应在 0–100K 之间")
+            if high is not None and (not math.isfinite(high) or high < low or high > 100):
+                raise ValueError(f"{city} 的最高月薪应不低于最低月薪，且不超过 100K")
     floors = search.get("salary_floor_by_city", {})
     if not isinstance(floors, dict):
         raise ValueError("城市最低月薪必须是 {城市: K数值} 对象")

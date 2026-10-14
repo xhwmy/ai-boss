@@ -55,3 +55,18 @@ def salary_floor_for_city(floors, actual_city, search_city=""):
                     city.startswith(key + "·") or city.startswith(key)):
             return name, float(floors[name])
     return None
+
+
+def salary_range_for_city(ranges, actual_city, search_city=""):
+    """Return the configured monthly K range for the exact searched city."""
+    city = str(actual_city or search_city or "").strip().removesuffix("市")
+    if not city or city == "不限" or not isinstance(ranges, list):
+        return None
+    for row in ranges:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("city") or "").strip().removesuffix("市")
+        if name and city.startswith(name):
+            return name, float(row["min_k"]), (float(row["max_k"])
+                         if row.get("max_k") not in (None, "") else None)
+    return None
