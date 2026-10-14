@@ -30,10 +30,19 @@
     background: var(--card); border-radius: var(--radius);
     padding: 16px 24px; box-shadow: var(--shadow);
     display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 12px;
     margin-bottom: 16px;
   }
+  .header-brand { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
   .header h1 { font-size: 20px; display: flex; align-items: center; gap: 8px; }
   .header h1 small { font-size: 13px; color: var(--text2); font-weight: normal; }
+  .account-badge {
+    display: inline-flex; align-items: center; padding: 5px 12px;
+    border: 1px solid #b7dfc3; border-radius: 8px;
+    background: #e6f4ea; color: #176b32; font-size: 14px; font-weight: 700;
+  }
+  .account-badge.account-pending { border-color: var(--border); background: #f4f5f7; color: var(--text2); }
+  .account-badge.account-mismatch { border-color: #f4b8b3; background: #fce8e6; color: #b3261e; }
 
   /* 状态指示器 */
   .status-badge {
@@ -176,7 +185,10 @@
 
   <!-- 头部 -->
   <div class="header">
-    <h1>🚀 BOSS 直聘 AI 自动沟通 <small>v3.1</small></h1>
+    <div class="header-brand">
+      <h1>🚀 BOSS 直聘 AI 自动沟通 <small>v3.1</small></h1>
+      <div id="accountInfo" class="account-badge account-pending" role="status">👤 当前 BOSS 登录账号：等待核对</div>
+    </div>
     <div style="display:flex;align-items:center;gap:10px">
       <a class="btn btn-outline btn-sm" href="/blacklist" target="_blank" title="查看低质量岗位黑名单（永久/短期/观察 三级，命中直接跳过）">🚫 黑名单</a>
       <a class="btn btn-outline btn-sm" href="/starred" target="_blank" title="查看历史超预期岗位（AI 评分 ≥ 超预期阈值 自动收藏）">⭐ 超预期岗位</a>
@@ -211,7 +223,6 @@
         <div style="margin-top:8px;font-size:12px;color:var(--text2)">
           <span id="currentJobInfo">等待启动...</span>
         </div>
-        <div style="margin-top:6px;font-size:12px;color:var(--text2)" id="accountInfo">BOSS 账号：等待登录核对</div>
       </div>
 
       <!-- 配置面板 -->
@@ -634,11 +645,16 @@ function updateStatus(payload) {
   document.getElementById('statManualApprovals').textContent = payload.manual_approvals || 0;
   const accountEl = document.getElementById('accountInfo');
   const account = payload.account;
+  accountEl.classList.remove('account-pending', 'account-mismatch');
   if (account && account.name) {
     const when = account.verified_at ? account.verified_at.replace('T', ' ') : '';
-    accountEl.textContent = `BOSS 账号：${account.name} · ${account.matched ? '启动时已核对' : '与简历姓名不一致'}${when ? ' · ' + when : ''}`;
+    accountEl.textContent = `👤 当前 BOSS 登录账号：${account.name} · ${account.matched ? '本次启动已核对' : '与简历姓名不一致'}`;
+    accountEl.title = when ? `账号核对时间：${when}` : '';
+    if (!account.matched) accountEl.classList.add('account-mismatch');
   } else {
-    accountEl.textContent = 'BOSS 账号：等待登录核对';
+    accountEl.textContent = '👤 当前 BOSS 登录账号：等待核对';
+    accountEl.title = '';
+    accountEl.classList.add('account-pending');
   }
   const incompleteEl = document.getElementById('cityIncomplete');
   const incomplete = payload.incomplete_cities || [];
