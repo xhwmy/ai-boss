@@ -6,8 +6,9 @@ JD 分析模块
 import json
 import time
 import re
+from datetime import datetime
 
-from utils import setup_logger, retry_on_error
+from utils import setup_logger
 
 logger = setup_logger("analyzer")
 
@@ -69,11 +70,17 @@ SYSTEM_PROMPT_TEMPLATE = """你是一位专业的招聘匹配分析助手。你�
 class JDAnalyzer:
     """JD 分析器——使用 DeepSeek 评估岗位匹配度"""
 
-    def __init__(self, api_key: str, api_base: str = "https://api.deepseek.com", model: str = "deepseek-chat"):
+    def __init__(self, api_key: str, api_base: str = "https://api.deepseek.com",
+                 model: str = "deepseek-chat", http_proxy: str = ""):
         self.api_key = api_key
         self.api_base = api_base
         self.model = model
+        self.http_proxy = http_proxy
         self.llm = None
+        self._http_client = None
+        self.last_request_ok = None
+        self.last_request_at = ""
+        self.last_error = ""
         self._init_llm()
 
     def _init_llm(self):
@@ -83,7 +90,14 @@ class JDAnalyzer:
             return
 
         try:
+            import httpx
             from langchain_openai import ChatOpenAI
+
+            options = {}
+            if self.http_proxy:
+                self._http_client = httpx.Client(proxy=self.http_proxy, timeout=30)
+                options["http_client"] = self._http_client
+                logger.info("🌐 AI 已配置本机 HTTP 代理")
 
             self.llm = ChatOpenAI(
                 model=self.model,
@@ -91,6 +105,7 @@ class JDAnalyzer:
                 base_url=self.api_base,
                 temperature=0.1,
                 max_tokens=2048,
+                **options,
             )
             # 测试连通性
             logger.info("✅ DeepSeek AI 初始化成功")
@@ -101,12 +116,23 @@ class JDAnalyzer:
         except Exception as e:
             logger.error(f"❌ DeepSeek 初始化失败: {e}")
             self.llm = None
+            self.close()
+
+    def close(self):
+        if self._http_client:
+            self._http_client.close()
+            self._http_client = None
+
+    def connection_status(self):
+        return {"ready": self.is_ready(), "proxy_configured": bool(self.http_proxy),
+                "last_request_ok": self.last_request_ok,
+                "last_request_at": self.last_request_at,
+                "last_error": self.last_error}
 
     def is_ready(self) -> bool:
         """检查 AI 是否可用"""
         return self.llm is not None
 
-    @retry_on_error(max_retries=3, logger=logger)
     def analyze(self, jd_text: str, resume_text: str, threshold: int = 60,
                 scoring_rules: str = "") -> dict:
         """分析岗位 JD，返回匹配度评估
@@ -133,18 +159,31 @@ class JDAnalyzer:
                     content = "\n".join(str(block.get("text", "")) if isinstance(block, dict)
                                         else str(block) for block in content)
                 result = self._parse_json_response(str(content), threshold)
+                self.last_request_ok = True
+                self.last_request_at = datetime.now().isoformat(timespec="seconds")
+                self.last_error = ""
                 logger.info(f"  📊 匹配度: {result.get('match_score', '?')}分 → "
                             f"{'✅ 投递' if result.get('should_apply') else '⏭️ 跳过'}"
                             f" | {result.get('reason', '')}")
                 return result
             except (json.JSONDecodeError, ValueError, TypeError):
+                self.last_request_ok = False
+                self.last_request_at = datetime.now().isoformat(timespec="seconds")
+                self.last_error = "AI 返回格式异常"
                 if attempt == 0:
                     logger.warning("  ⚠️ AI 返回格式异常，重试一次")
                     prompt += "\n请只输出一个完整 JSON 对象，勿输出解释或代码块。"
                 else:
                     logger.warning("  ⚠️ AI 返回格式仍异常，跳过该岗位")
             except Exception as e:
+                self.last_request_ok = False
+                self.last_request_at = datetime.now().isoformat(timespec="seconds")
+                self.last_error = f"{type(e).__name__}: {e}"[:160]
                 logger.warning(f"  ⚠️ AI 分析失败: {e}")
+                if attempt == 0:
+                    logger.info("  🔄 3 秒后重试一次 AI 连接")
+                    time.sleep(3)
+                    continue
                 return self._fallback_decision()
         return self._fallback_decision()
 

@@ -129,6 +129,42 @@ SCROLL_INFO_JS = """
     })()
 """
 
+# Search result cards occupy the left column. The detail pane also contains
+# recommendation links, so reading every job_detail anchor on the page mixes
+# unrelated jobs into the search and makes scrolling appear to find new cards.
+JOB_URLS_JS = r"""
+    (() => {
+        if (!location.pathname.includes('/web/geek/jobs')) return [];
+        const selector = '.job-list-container, .rec-job-list, .job-list-box, '
+            + '[class*="job-list"], [class*="job_list"], [class*="jobList"], '
+            + '[class*="search-job"]';
+        const left = [...document.querySelectorAll(selector)].filter(el => {
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.left < innerWidth * 0.6
+                && el.querySelector('a[href*="/job_detail/"]');
+        });
+        const roots = left.length ? left : [document];
+        const urls = new Map();
+        const collect = root => {
+            for (const a of root.querySelectorAll('a[href*="/job_detail/"]')) {
+                const r = a.getBoundingClientRect();
+                if (r.width <= 0 || r.left >= innerWidth * 0.6) continue;
+                const url = a.href || '';
+                try {
+                    const parsed = new URL(url);
+                    if (!/(^|\.)zhipin\.com$/.test(parsed.hostname)) continue;
+                    const match = parsed.pathname.match(/^\/job_detail\/([A-Za-z0-9_-]+)\.html$/);
+                    if (!match) continue;
+                    if (!urls.has(match[1])) urls.set(match[1], url);
+                } catch (_) {}
+            }
+        };
+        roots.forEach(collect);
+        if (!urls.size && left.length) collect(document);
+        return [...urls.values()];
+    })()
+"""
+
 # ── 岗位详情页结构化信息提取（标题/薪资/公司/学历/经验/城市/类型）──
 # ⭐ v2.6：优先取 BOSS 网页的语义化 DOM（h1.name / .salary / .company-name / .job-info 标签）。
 # 之前用纯文本启发式选标题，会把「经验1-3年」「本科」等顶部标签行误当成岗位名称，
@@ -682,22 +718,8 @@ class BossBrowser:
         过滤掉 job_detail/（无岗位 ID）这类会被 BOSS 当作失效页跳转的
         链接，避免引擎把失效页当岗位处理、页面卡在 job_detail/ 上。
         """
-        js = r"""
-            (() => {
-                const links = [...document.querySelectorAll('a[href*="job_detail"]')];
-                const urls = new Set();
-                for (const a of links) {
-                    const h = a.href || '';
-                    const idx = h.indexOf('/job_detail/');
-                    if (idx < 0) continue;
-                    const seg = h.slice(idx + '/job_detail/'.length).split(/[\/?#&]/)[0];
-                    if (seg && /\.html$/i.test(seg)) urls.add(h);
-                }
-                return [...urls];
-            })()
-        """
         try:
-            urls = self.wb.evaluate(js) or []
+            urls = self.wb.evaluate(JOB_URLS_JS) or []
             if urls:
                 logger.info(f"  📋 获取到 {len(urls)} 个岗位 URL")
             return urls
@@ -710,10 +732,7 @@ class BossBrowser:
     def _count_job_links(self) -> int:
         """统计当前页面已渲染的岗位链接数量"""
         try:
-            val = self.wb.evaluate(
-                "document.querySelectorAll('a[href*=\"job_detail\"]').length"
-            )
-            return int(val or 0)
+            return len(self.wb.evaluate(JOB_URLS_JS) or [])
         except Exception:
             return 0
 

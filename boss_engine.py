@@ -24,6 +24,7 @@ from browser import BossBrowser
 from city_search import page_allocations, resolve_city_targets
 from application_ledger import ApplicationLedger
 from job_filters import minimum_monthly_salary_k, salary_floor_for_city, salary_range_for_city
+from job_identity import job_key
 from submission import SubmissionWorkflow, greeting_for
 from analyzer import JDAnalyzer
 import database  # ⭐ v3.0 超预期岗位收藏（SQLite）
@@ -71,6 +72,7 @@ class BossEngine:
         self._log_seq = int(time.time() * 1000)
         self._account = None
         self._incomplete_cities = []
+        self._last_search_day = None
 
         # 待人工审核队列（半自动模式）
         self._reviews_path = ROOT_DIR / "results" / "pending_reviews.json"
@@ -212,7 +214,7 @@ class BossEngine:
     # ==================== 配置管理 ====================
 
     def update_config(self, new_config: dict):
-        """保存配置；新搜索条件由下次启动的搜索循环读取。"""
+        """保存配置；新城市和页数由下一次搜索循环读取。"""
         with self._lock:
             # 保存到文件
             config_path = ROOT_DIR / "config.json"
@@ -360,6 +362,7 @@ class BossEngine:
                 self.add_log("info", f"  ✅ BOSS 已确认发送: {title}（本轮 {self._stats['applied']} 个）")
                 greeting = record.get("greeting") or greeting_for(self._resume, record)
                 state, detail = self._submission.process(record, greeting)
+                self._ledger.record_followup_status(record, state, detail)
                 if state == "sent":
                     self.add_log("info", f"  📎 {title}：{detail}")
                 elif state == "pending":
@@ -474,10 +477,10 @@ class BossEngine:
     # ==================== 控制命令 ====================
 
     def start(self):
-        if self._status == self.RUNNING:
-            return False, "已经在运行中"
         if self._status == self.PAUSED:
             return self.resume()
+        if self._thread and self._thread.is_alive():
+            return False, "引擎正在运行或尚未完全停止"
 
         self._stop_event.clear()
         self._pause_event.set()
@@ -494,6 +497,7 @@ class BossEngine:
         self._log_buffer = []
         self._account = None
         self._incomplete_cities = []
+        self._last_search_day = None
         self._start_time = time.time()
 
         # 重新加载配置
@@ -508,7 +512,7 @@ class BossEngine:
         return True, "已启动"
 
     def stop(self):
-        if self._status == self.IDLE:
+        if not self._thread or not self._thread.is_alive():
             return False, "引擎未运行"
         self._stop_event.set()
         self._pause_event.set()  # A paused worker must wake to observe stop.
@@ -549,6 +553,7 @@ class BossEngine:
                 "manual_approvals": sum(item.get("state") == "needs_manual"
                                         for item in self._approved_reviews),
                 "submission": self._ledger.summary(),
+                "ai_connection": self._analyzer.connection_status() if self._analyzer else None,
                 "config": {
                     "search": {k: v for k, v in self._config.get("search", {}).items()},
                     "ai": {k: v for k, v in self._config.get("ai", {}).items()},
@@ -580,14 +585,18 @@ class BossEngine:
         if not self._env["api_key"] or self._env["api_key"] == "sk-your-deepseek-api-key-here":
             self.add_log("error", "❌ 未配置 DeepSeek API Key！请在 .env 中设置")
             self._set_status(self.ERROR, "API Key 未配置")
+            self._finish_run()
             return
 
         # 初始化 AI 分析器
         self.add_log("info", "🤖 正在初始化 AI 分析器...")
-        self._analyzer = JDAnalyzer(api_key=self._env["api_key"], api_base=self._env["api_base"], model=self._env["model"])
+        self._analyzer = JDAnalyzer(api_key=self._env["api_key"],
+                                    api_base=self._env["api_base"], model=self._env["model"],
+                                    http_proxy=self._env.get("ai_http_proxy", ""))
         if not self._analyzer.is_ready():
             self.add_log("error", "❌ AI 分析器初始化失败")
             self._set_status(self.ERROR, "AI 初始化失败")
+            self._finish_run()
             return
         self.add_log("info", "✅ AI 分析器就绪")
 
@@ -619,52 +628,71 @@ class BossEngine:
                         pass
                 self._set_status(self.RUNNING, "等待浏览器恢复，60 秒后重试")
                 if self._stop_event.wait(60):
+                    self._finish_run()
                     return
         if self._stop_event.is_set():
+            self._finish_run()
             return
 
         # 执行搜索与投递循环
         try:
             self._complete_pending_once()
-            targets = resolve_city_targets(self._config["search"].get("city", ""))
-            page_limits = page_allocations(self._config["search"].get("page_count", 5), len(targets))
-            for (city_name, city_code), city_pages in zip(targets, page_limits):
-                if self._stop_event.is_set():
-                    break
-                self.add_log("info", f"🌆 城市 {city_name}：最多搜索 {city_pages} 批")
-                selected_range = salary_range_for_city(
-                    self._config["search"].get("salary_ranges_by_city"), city_name)
-                if selected_range:
-                    _, min_k, max_k = selected_range
-                    shown_range = (f"{min_k:g}–{max_k:g}K" if max_k is not None
-                                   else f"{min_k:g}K 以上")
-                    self.add_log("info", f"💰 {city_name}：岗位月薪下限须在 {shown_range}")
-                for attempt in range(3):
-                    if self._stop_event.is_set():
-                        break
-                    try:
-                        self._main_loop(city_code, city_name, city_pages)
-                        break
-                    except Exception as exc:
-                        self.add_log("warn", f"⚠️ {city_name} 搜索中断（第 {attempt + 1} 次）：{exc}")
-                        if attempt == 2:
-                            self.add_log("error", f"❌ {city_name} 搜索重试未恢复；继续下一城市")
-                            with self._lock:
-                                self._incomplete_cities.append(city_name)
-                            break
-                        if self._stop_event.wait(30):
-                            break
-                        self._complete_pending_once()
+            self._last_search_day = datetime.now().date()
+            self._run_search_cycle()
             self._monitor_followups()
         except Exception as e:
             self.add_log("error", f"❌ 运行异常: {e}")
             self._set_status(self.ERROR, f"异常: {str(e)[:50]}")
         finally:
-            self._browser.close()
-            if self._status not in [self.ERROR]:
-                self._set_status(self.IDLE, "已完成")
-            self.add_log("info", f"👋 引擎结束，共处理 {self._stats['total']} 个岗位，"
-                                  f"已确认沟通 {self._stats['applied']} 个")
+            self._finish_run()
+
+    def _finish_run(self):
+        """Release connections and leave the panel in a usable state on every exit path."""
+        if self._browser:
+            try:
+                self._browser.close()
+            except Exception as exc:
+                self.add_log("warn", f"⚠️ 关闭浏览器桥接失败：{exc}")
+            self._browser = None
+        if self._analyzer:
+            self._analyzer.close()
+            self._analyzer = None
+        if self._status != self.ERROR:
+            self._set_status(self.IDLE, "已完成")
+        self.add_log("info", f"👋 引擎结束，共处理 {self._stats['total']} 个岗位，"
+                              f"已确认沟通 {self._stats['applied']} 个")
+
+    def _run_search_cycle(self):
+        """Search all configured cities once; the monitor schedules later days."""
+        targets = resolve_city_targets(self._config["search"].get("city", ""))
+        page_limits = page_allocations(self._config["search"].get("page_count", 5), len(targets))
+        for (city_name, city_code), city_pages in zip(targets, page_limits):
+            if self._stop_event.is_set():
+                break
+            self.add_log("info", f"🌆 城市 {city_name}：最多搜索 {city_pages} 批")
+            selected_range = salary_range_for_city(
+                self._config["search"].get("salary_ranges_by_city"), city_name)
+            if selected_range:
+                _, min_k, max_k = selected_range
+                shown_range = (f"{min_k:g}–{max_k:g}K" if max_k is not None
+                               else f"{min_k:g}K 以上")
+                self.add_log("info", f"💰 {city_name}：岗位月薪下限须在 {shown_range}")
+            for attempt in range(3):
+                if self._stop_event.is_set():
+                    break
+                try:
+                    self._main_loop(city_code, city_name, city_pages)
+                    break
+                except Exception as exc:
+                    self.add_log("warn", f"⚠️ {city_name} 搜索中断（第 {attempt + 1} 次）：{exc}")
+                    if attempt == 2:
+                        self.add_log("error", f"❌ {city_name} 搜索重试未恢复；继续下一城市")
+                        with self._lock:
+                            self._incomplete_cities.append(city_name)
+                        break
+                    if self._stop_event.wait(30):
+                        break
+                    self._complete_pending_once()
 
     def _complete_pending_once(self):
         pending = self._ledger.pending()
@@ -674,6 +702,7 @@ class BossEngine:
             greeting = record.get("greeting") or greeting_for(self._resume, record)
             try:
                 status, detail = self._submission.process(record, greeting)
+                self._ledger.record_followup_status(record, status, detail)
                 self.add_log("info" if status in ("sent", "pending") else "warn",
                              f"  📎 待补发 {record.get('job_title', '')}：{detail}")
             except Exception as exc:
@@ -686,6 +715,24 @@ class BossEngine:
             if not self._pause_event.is_set():
                 self._stop_event.wait(2)
                 continue
+            daily_time = self._config.get("search", {}).get("daily_search_time", "09:00")
+            now = datetime.now()
+            if (daily_time and self._last_search_day and now.date() > self._last_search_day
+                    and now.strftime("%H:%M") >= daily_time):
+                self._last_search_day = now.date()
+                with self._lock:
+                    self._stats = {"total": 0, "applied": 0, "skipped": 0,
+                                   "failed": 0, "skipped_no_match": 0, "skip_reasons": []}
+                    self._incomplete_cities = []
+                self._processed_jobs.clear()
+                self._last_ten_pause_count = 0
+                self.add_log("info", f"📅 开始 {now.date()} 的定时搜索")
+                try:
+                    self._run_search_cycle()
+                except Exception as exc:
+                    self.add_log("error", f"❌ 今日定时搜索异常：{exc}；明日继续尝试")
+                next_resume_check = time.monotonic() + 300
+                continue
             self._process_reviews()
             if time.monotonic() >= next_resume_check:
                 self._complete_pending_once()
@@ -693,10 +740,11 @@ class BossEngine:
             resume_count = len(self._ledger.pending())
             with self._lock:
                 review_count = len(self._pending_reviews)
-            if not resume_count and not review_count and self._review_queue.empty():
+            if not resume_count and not review_count and self._review_queue.empty() and not daily_time:
                 return
+            next_search = (f"；下次搜索 {daily_time}" if daily_time else "")
             self._set_status(self.RUNNING,
-                             f"等待后续处理：待审核 {review_count}，待完成会话 {resume_count}")
+                             f"等待后续处理：待审核 {review_count}，待完成会话 {resume_count}{next_search}")
             self._stop_event.wait(2)
 
     def _main_loop(self, city_code="", city_name="不限", page_limit=None):
@@ -790,9 +838,13 @@ class BossEngine:
 
                 # ── 获取本批新岗位 URL（去重）──
                 time.sleep(2)
-                new_urls = [u for u in self._browser.get_job_urls() if u not in seen_urls]
+                new_urls = []
+                for url in self._browser.get_job_urls():
+                    key = job_key(url)
+                    if key not in seen_urls:
+                        seen_urls.add(key)
+                        new_urls.append(url)
                 if new_urls:
-                    seen_urls.update(new_urls)
                     self.add_log("info", f"📋 第 {page} 批: {len(new_urls)} 个岗位（累计 {len(seen_urls)}）")
                     for idx, job_url in enumerate(new_urls):
                         if self._stop_event.is_set():
@@ -805,8 +857,12 @@ class BossEngine:
                             break
                         result = self._process_job(job_url, idx, len(new_urls), page,
                                                    threshold, app_cfg, city_name)
+                        if result == "retry" and not self._stop_event.wait(5):
+                            self.add_log("info", "  🔄 此岗位重试一次")
+                            result = self._process_job(job_url, idx, len(new_urls), page,
+                                                       threshold, app_cfg, city_name)
                         if result not in ("retry", "stop", "quota"):
-                            self._processed_jobs.add(job_url)
+                            self._processed_jobs.add(job_key(job_url))
                         if result in ("stop", "quota"):
                             if result == "stop":
                                 self.add_log("warn", "⏹️  当前批次已停止")

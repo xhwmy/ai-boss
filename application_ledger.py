@@ -9,6 +9,7 @@ from pathlib import Path
 
 from config import ROOT_DIR
 import database
+from job_identity import job_key
 from utils import save_result
 
 
@@ -19,6 +20,11 @@ class ApplicationLedger:
     def __init__(self):
         self.results_dir = Path(ROOT_DIR) / "results"
         self.state_path = self.results_dir / "submission_state.json"
+        self._sent_keys = {
+            job_key(item.get("url"))
+            for path in self.results_dir.glob("applied_*.json")
+            for item in self._read(path) if item.get("url")
+        }
 
     def _read(self, path):
         try:
@@ -28,12 +34,7 @@ class ApplicationLedger:
             return []
 
     def was_sent(self, url):
-        if not url:
-            return False
-        for path in self.results_dir.glob("applied_*.json"):
-            if any(item.get("url") == url for item in self._read(path)):
-                return True
-        return False
+        return bool(url) and job_key(url) in self._sent_keys
 
     def recent_times(self, now=None):
         now = now or datetime.now()
@@ -63,6 +64,7 @@ class ApplicationLedger:
         if self.was_sent(data.get("url")):
             return False
         save_result("applied", dict(data))
+        self._sent_keys.add(job_key(data.get("url")))
         try:
             database.record_history_contact(data)
         except sqlite3.Error:
@@ -78,6 +80,12 @@ class ApplicationLedger:
         except (OSError, ValueError):
             return {}
 
+    def _write_state(self, state):
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, self.state_path)
+
     def phase(self, url, name):
         return bool(self._state().get(url, {}).get(name))
 
@@ -90,14 +98,30 @@ class ApplicationLedger:
         item.update({k: v for k, v in record.items() if k in
                      ("url", "job_title", "company", "greeting")})
         item[name] = datetime.now().isoformat(timespec="seconds")
-        self.results_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, self.state_path)
+        self._write_state(state)
         try:
             database.record_history_event(url, name, item[name])
         except sqlite3.Error:
             logger.exception("SQLite 动作记录写入失败；下次启动会从 JSON 恢复")
+
+    def record_followup_status(self, record, status, detail):
+        """Save why a contacted job is still waiting for its PDF."""
+        url = record.get("url", "")
+        if not url:
+            return
+        checked_at = datetime.now().isoformat(timespec="seconds")
+        state = self._state()
+        item = state.setdefault(url, {})
+        item.update({k: v for k, v in record.items() if k in
+                     ("url", "job_title", "company")})
+        item.update({"followup_status": status,
+                     "followup_detail": str(detail or "")[:300],
+                     "followup_checked_at": checked_at})
+        self._write_state(state)
+        try:
+            database.record_history_followup(url, status, item["followup_detail"], checked_at)
+        except sqlite3.Error:
+            logger.exception("SQLite 后续状态写入失败；下次启动会从 JSON 恢复")
 
     def pending(self):
         """Jobs contacted by this version and still missing introduction or PDF."""
@@ -123,6 +147,8 @@ class ApplicationLedger:
                                    for v in records),
             "pending_workflows": sum(not (v.get("greeting_sent") and v.get("resume_sent"))
                                      for v in records),
+            "needs_attention": sum(v.get("followup_status") in ("failed", "unconfirmed")
+                                   and not v.get("resume_sent") for v in records),
         }
 
     def daily_report(self, day: date):

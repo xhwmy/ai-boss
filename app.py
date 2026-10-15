@@ -84,7 +84,7 @@ def update_config():
         engine.update_config(data)
         return jsonify({"success": True, "config": engine.config,
                         "saved_at": datetime.now().isoformat(timespec="seconds"),
-                        "applies_when": "城市列表和页数下次启动；薪资条件用于后续处理的岗位"})
+                        "applies_when": "城市列表和页数下次搜索生效；薪资条件用于后续处理的岗位"})
     except ValueError as e:
         return jsonify({"success": False, "error": str(e)}), 400
     except Exception as e:

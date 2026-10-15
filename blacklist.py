@@ -11,6 +11,7 @@
 - 评分过低：先进观察（watch），再次命中仍低分 → 升级永久（防误杀）
 """
 
+import re
 from datetime import datetime, timedelta
 
 import database
@@ -33,11 +34,19 @@ def blacklist_config(config: dict) -> dict:
 
 
 def match_outsourcing(text: str, keywords=None) -> bool:
-    """JD 文本是否命中劳务外包关键词（零 AI 成本）"""
+    """Find positive outsourcing mentions without treating simple negations as proof."""
     if not text:
         return False
     kws = keywords or DEFAULT_OUTSOURCING_KEYWORDS
-    return any(k in text for k in kws)
+    for keyword in kws:
+        if not keyword:
+            continue
+        for hit in re.finditer(re.escape(keyword), text):
+            prefix = text[max(0, hit.start() - 8):hit.start()]
+            if re.search(r"(?:非|不是|并非|不属于|无需|不需|无须|不接受|拒绝|不涉及)\s*$", prefix):
+                continue
+            return True
+    return False
 
 
 def check_skip(url: str):
@@ -124,7 +133,7 @@ def classify(job_url: str, jd_info: dict, jd_text: str, decision: dict,
     record = {
         "job_title": jd_info.get("title", ""),
         "company": jd_info.get("company", ""),
-        "url": job_url,
+        "url": existing.get("url", job_url) if existing else job_url,
         "reason": reason,
         "level": level,
         "source": "auto",

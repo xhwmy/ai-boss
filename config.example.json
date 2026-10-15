@@ -8,6 +8,7 @@
     ],
     "city": "北京，杭州",
     "page_count": 20,
+    "daily_search_time": "09:00",
     "excluded_title_keywords": ["内容审核", "内容审查", "兼职", "暖通", "机电", "楼宇"],
     "salary_floor_by_city": {},
     "salary_ranges_by_city": [

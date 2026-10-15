@@ -6,6 +6,7 @@
 import json
 import math
 import os
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -47,6 +48,7 @@ def load_env() -> dict:
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
     api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
     model = os.getenv("AI_MODEL", "deepseek-chat")
+    ai_http_proxy = os.getenv("AI_HTTP_PROXY", "")
 
     if not api_key or api_key == "sk-your-deepseek-api-key-here":
         print("⚠️  警告：未配置 DeepSeek API Key！")
@@ -57,6 +59,7 @@ def load_env() -> dict:
         "api_key": api_key,
         "api_base": api_base,
         "model": model,
+        "ai_http_proxy": ai_http_proxy,
     }
 
 
@@ -158,6 +161,9 @@ def validate_config(config: dict):
     search = config["search"]
     if not search.get("keyword"):
         raise ValueError("搜索关键词不能为空！请设置 config.json 中的 search.keyword")
+    daily_time = search.get("daily_search_time", "09:00")
+    if not isinstance(daily_time, str) or (daily_time and not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", daily_time)):
+        raise ValueError("每日自动搜索时间应为 HH:MM，留空表示关闭")
     ranges = search.get("salary_ranges_by_city")
     if ranges is not None:
         if not isinstance(ranges, list):
@@ -200,3 +206,11 @@ def validate_config(config: dict):
     if not isinstance(excluded, list) or any(
             not isinstance(word, str) or not word.strip() for word in excluded):
         raise ValueError("排除岗位标题关键词必须是非空文本列表")
+    blacklist = config.get("blacklist", {})
+    keywords = blacklist.get("outsourcing_keywords")
+    if keywords is not None:
+        if not isinstance(keywords, list) or any(
+                not isinstance(word, str) or not word.strip() for word in keywords):
+            raise ValueError("外包预筛关键词必须是非空文本列表")
+        if blacklist.get("enabled", True) and not keywords:
+            raise ValueError("自动拉黑开启时至少需要一个外包预筛关键词")

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import ROOT_DIR
+from job_identity import job_id_from_url, job_key
 
 DB_PATH = ROOT_DIR / "data" / "boss_jobs.db"
 
@@ -79,6 +80,10 @@ def init_db():
                 contact_at TEXT NOT NULL
             )
         """)
+        contact_columns = {row[1] for row in conn.execute("PRAGMA table_info(history_contacts)")}
+        for name in ("followup_status", "followup_detail", "followup_checked_at"):
+            if name not in contact_columns:
+                conn.execute(f"ALTER TABLE history_contacts ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS history_events (
                 url TEXT NOT NULL,
@@ -94,6 +99,14 @@ def init_db():
                 PRIMARY KEY (day, url)
             )
         """)
+        # Older runs stored the full URL, including changing securityId values.
+        # This table only counts matches, so its keys can be migrated safely.
+        for day, url in conn.execute("SELECT day, url FROM history_matches").fetchall():
+            key = job_key(url)
+            if key != url:
+                conn.execute("INSERT OR IGNORE INTO history_matches (day, url) VALUES (?, ?)",
+                             (day, key))
+                conn.execute("DELETE FROM history_matches WHERE day=? AND url=?", (day, url))
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_contact_date ON history_contacts(contact_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_event_date ON history_events(happened_at)")
         conn.commit()
@@ -131,8 +144,19 @@ def record_history_event(url, event_type, happened_at):
         """, (url, event_type, happened_at))
 
 
+def record_history_followup(url, status, detail, checked_at):
+    if not url:
+        return
+    with closing(_get_conn()) as conn, conn:
+        conn.execute("""
+            UPDATE history_contacts
+            SET followup_status=?, followup_detail=?, followup_checked_at=?
+            WHERE url=?
+        """, (status, detail, checked_at, url))
+
+
 def record_history_match(record):
-    url = str(record.get("url") or "").strip()
+    url = job_key(str(record.get("url") or "").strip())
     stamp = str(record.get("timestamp") or datetime.now().isoformat(timespec="seconds"))
     if not url:
         return
@@ -170,6 +194,10 @@ def import_legacy_history():
                 for name in ("contact_sent", "workflow_enabled", "greeting_sent", "resume_sent"):
                     if phases.get(name):
                         record_history_event(url, name, phases[name])
+                if phases.get("followup_checked_at"):
+                    record_history_followup(
+                        url, phases.get("followup_status", ""),
+                        phases.get("followup_detail", ""), phases["followup_checked_at"])
 
 
 def history_dates():
@@ -217,6 +245,9 @@ def history_report(day):
         "city": row["city"], "salary": row["salary"],
         "match_score": row["match_score"], "contact_at": row["contact_at"],
         "greeting_at": row["greeting_at"] or "", "resume_at": row["resume_at"] or "",
+        "followup_status": row["followup_status"],
+        "followup_detail": row["followup_detail"],
+        "followup_checked_at": row["followup_checked_at"],
         "workflow_recorded": bool(row["workflow_at"]),
     } for row in contacts]
     events = [{
@@ -236,6 +267,8 @@ def history_report(day):
             "greetings_sent": sum(row["event_type"] == "greeting_sent" for row in event_rows),
             "resumes_sent": sum(row["event_type"] == "resume_sent" for row in event_rows),
             "pending_resumes_from_contacts": sum(bool(row["greeting_at"]) and not row["resume_at"] for row in contacts),
+            "followups_need_attention": sum(row["followup_status"] in ("failed", "unconfirmed")
+                                             and not row["resume_at"] for row in contacts),
         },
         "events": events, "records": records,
     }
@@ -245,6 +278,15 @@ def save_starred_job(job: dict):
     """保存/更新一个超预期岗位（按 url 去重，重复收藏更新分数与 JD，保留首次收藏时间）"""
     conn = _get_conn()
     try:
+        url = job.get("url", "")
+        job_id = job_id_from_url(url)
+        if job_id:
+            existing = conn.execute(
+                "SELECT url FROM starred_jobs WHERE instr(url, ?) > 0 ORDER BY id LIMIT 1",
+                (f"/job_detail/{job_id}.html",),
+            ).fetchone()
+            if existing:
+                url = existing["url"]
         conn.execute("""
             INSERT INTO starred_jobs
                 (job_title, company, company_size, financing, listed, industry,
@@ -272,7 +314,7 @@ def save_starred_job(job: dict):
             job.get("listed"), job.get("industry", ""),
             job.get("salary", ""), job.get("city", ""),
             job.get("education", ""), job.get("experience", ""),
-            job.get("job_type", ""), job.get("url", ""),
+            job.get("job_type", ""), url,
             int(job.get("match_score", 0) or 0), job.get("reason", ""),
             job.get("jd_text", ""),
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -323,6 +365,15 @@ def save_blacklist_job(job: dict):
     """保存/更新一个黑名单岗位（按 url 去重，重复拉黑更新原因与等级）"""
     conn = _get_conn()
     try:
+        url = job.get("url", "")
+        job_id = job_id_from_url(url)
+        if job_id:
+            existing = conn.execute(
+                "SELECT url FROM blacklist_jobs WHERE instr(url, ?) > 0 ORDER BY id LIMIT 1",
+                (f"/job_detail/{job_id}.html",),
+            ).fetchone()
+            if existing:
+                url = existing["url"]
         conn.execute("""
             INSERT INTO blacklist_jobs
                 (job_title, company, url, reason, level, source, hit_count,
@@ -340,7 +391,7 @@ def save_blacklist_job(job: dict):
                 match_score  = excluded.match_score
         """, (
             job.get("job_title", ""), job.get("company", ""),
-            job.get("url", ""), job.get("reason", ""),
+            url, job.get("reason", ""),
             job.get("level", "watch"), job.get("source", "auto"),
             int(job.get("hit_count", 0) or 0),
             job.get("duration_days"),
@@ -372,6 +423,13 @@ def get_blacklist_by_url(url: str) -> dict | None:
         row = conn.execute(
             "SELECT * FROM blacklist_jobs WHERE url = ?", (url,)
         ).fetchone()
+        if not row:
+            job_id = job_id_from_url(url)
+            if job_id:
+                row = conn.execute(
+                    "SELECT * FROM blacklist_jobs WHERE instr(url, ?) > 0 ORDER BY id DESC LIMIT 1",
+                    (f"/job_detail/{job_id}.html",),
+                ).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()

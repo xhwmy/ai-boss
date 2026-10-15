@@ -23,7 +23,7 @@
   .available-days { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
   .available-days button.active { background:var(--blue); color:#fff; border-color:var(--blue); }
   .note { color:var(--muted); font-size:12px; margin:10px 0 0; }
-  .cards { display:grid; grid-template-columns:repeat(5,minmax(130px,1fr)); gap:10px; margin-top:16px; }
+  .cards { display:grid; grid-template-columns:repeat(6,minmax(130px,1fr)); gap:10px; margin-top:16px; }
   .metric { background:#f7f8fa; border-radius:8px; padding:14px; }
   .metric strong { display:block; font-size:28px; line-height:1.2; color:var(--blue); }
   .metric:nth-child(2) strong,.metric:nth-child(4) strong { color:var(--green); }
@@ -66,8 +66,9 @@
       <div class="metric"><strong id="greetings">0</strong><span>当天介绍消息已发</span></div>
       <div class="metric"><strong id="resumes">0</strong><span>当天 PDF 已发送</span></div>
       <div class="metric"><strong id="pending">0</strong><span>当天联系岗位目前待发 PDF</span></div>
+      <div class="metric"><strong id="needsAttention">0</strong><span>当天联系岗位需人工核对</span></div>
     </div>
-    <p class="note">按本机日期统计实际记录的动作。介绍消息或 PDF 可能发给更早联系的岗位；“待发 PDF”显示所选日期联系岗位的当前状态。招聘方回复和面试邀请尚无可靠记录，因此不计入。</p>
+    <p class="note">按本机日期统计实际记录的动作。介绍消息或 PDF 可能发给更早联系的岗位；“待发 PDF”显示所选日期联系岗位的当前状态。发送结果未确认时不会自动重发，以免重复发送。招聘方回复和面试邀请尚无可靠记录，因此不计入。</p>
   </div>
 
   <div class="card">
@@ -78,7 +79,7 @@
 
   <div class="card">
     <h2>当天联系岗位及后续状态</h2>
-    <div class="scroll"><table><thead><tr><th>沟通时间</th><th>岗位</th><th>公司</th><th>城市</th><th>月薪</th><th>规模</th><th>匹配分</th><th>介绍消息</th><th>PDF</th></tr></thead><tbody id="records"></tbody></table></div>
+    <div class="scroll"><table><thead><tr><th>沟通时间</th><th>岗位</th><th>公司</th><th>城市</th><th>月薪</th><th>规模</th><th>匹配分</th><th>介绍消息</th><th>PDF</th><th>最新核查结果</th></tr></thead><tbody id="records"></tbody></table></div>
     <div id="recordsEmpty" class="empty" hidden>这一天没有已保存的沟通记录</div>
   </div>
 </div>
@@ -131,6 +132,15 @@ function phaseLabel(time, known) {
   if (time) return '已发 · ' + displayTime(time);
   return known ? '待发或待确认' : '旧记录未统计';
 }
+function followupLabel(item) {
+  if (item.resume_at) return 'PDF 已确认发送';
+  if (!item.followup_status) return item.workflow_recorded ? '尚未核查或等待下次检查' : '旧记录未统计';
+  const label = item.followup_status === 'pending' ? '等待平台允许'
+    : item.followup_status === 'unconfirmed' ? '发送结果未确认，需人工核对'
+    : item.followup_status === 'failed' ? '需人工处理' : '已完成';
+  const when = item.followup_checked_at ? `（${displayTime(item.followup_checked_at)}）` : '';
+  return `${label}${when}：${item.followup_detail || '无补充说明'}`;
+}
 function renderRecords(items) {
   const body = document.getElementById('records');
   body.replaceChildren();
@@ -146,6 +156,7 @@ function renderRecords(items) {
     addTextCell(row, item.match_score == null ? '' : String(item.match_score));
     addTextCell(row, phaseLabel(item.greeting_at, item.workflow_recorded));
     addTextCell(row, phaseLabel(item.resume_at, item.workflow_recorded));
+    addTextCell(row, followupLabel(item));
   }
 }
 let historyRequestId = 0;
@@ -165,6 +176,7 @@ async function loadHistory() {
     setText('greetings', totals.greetings_sent || 0);
     setText('resumes', totals.resumes_sent || 0);
     setText('pending', totals.pending_resumes_from_contacts || 0);
+    setText('needsAttention', totals.followups_need_attention || 0);
     renderEvents(data.events || []);
     renderRecords(data.records || []);
     document.querySelectorAll('#availableDays button').forEach(button => {

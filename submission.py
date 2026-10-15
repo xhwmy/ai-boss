@@ -88,12 +88,14 @@ class SubmissionWorkflow:
             while time.time() < deadline:
                 try:
                     picked = self._js("""(() => {
-                        const name = __DATA__;
+                        const {name, title} = __DATA__;
                         const matches=[...document.querySelectorAll('li[role=listitem] .friend-content')]
                             .filter(e=>e.innerText.includes(name));
-                        if(matches.length!==1) return {count:matches.length};
-                        matches[0].click(); return {count:1};
-                    })()""", company) or {}
+                        const withTitle=matches.filter(e=>e.innerText.includes(title));
+                        const candidates=withTitle.length===1?withTitle:matches;
+                        if(candidates.length!==1) return {count:candidates.length};
+                        candidates[0].click(); return {count:1};
+                    })()""", {"name": company, "title": title}) or {}
                 except Exception:
                     time.sleep(1)
                     continue

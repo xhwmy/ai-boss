@@ -188,10 +188,11 @@
     <div class="header-brand">
       <h1>🚀 BOSS 直聘 AI 自动沟通 <small>v3.1</small></h1>
       <div id="accountInfo" class="account-badge account-pending" role="status">👤 当前 BOSS 登录账号：等待核对</div>
+      <div id="aiInfo" style="font-size:12px;color:var(--text2);margin-top:4px" role="status">🤖 AI：等待连接</div>
     </div>
     <div style="display:flex;align-items:center;gap:10px">
       <a class="btn btn-outline btn-sm" href="/history" title="按日期查看已保存的沟通与简历发送记录">📅 历史记录</a>
-      <a class="btn btn-outline btn-sm" href="https://www.gsxt.gov.cn/" target="_blank" rel="noopener noreferrer" title="国家企业信用信息公示系统；可用工商全称或统一社会信用代码核对年报与出资信息">企业工商核验</a>
+      <a class="btn btn-outline btn-sm" href="https://www.gsxt.gov.cn/" target="_blank" rel="noopener noreferrer" title="人工打开国家企业信用信息公示系统；本软件尚未自动核验企业出资与参保数据">企业工商人工核验</a>
       <a class="btn btn-outline btn-sm" href="/blacklist" target="_blank" title="查看低质量岗位黑名单（永久/短期/观察 三级，命中直接跳过）">🚫 黑名单</a>
       <a class="btn btn-outline btn-sm" href="/starred" target="_blank" title="查看历史超预期岗位（AI 评分 ≥ 超预期阈值 自动收藏）">⭐ 超预期岗位</a>
       <div id="statusBadge" class="status-badge status-idle">
@@ -256,6 +257,18 @@
         </div>
         <div class="form-row">
           <div class="form-group">
+            <label style="display:flex;align-items:center;gap:6px">
+              <input id="cfg_daily_search" type="checkbox" checked> 每天自动搜索新岗位
+            </label>
+            <div style="font-size:12px;color:var(--text2)">点击启动会立即搜索一次；此后每天按下方时间再搜索。电脑和浏览器需保持运行。</div>
+          </div>
+          <div class="form-group">
+            <label for="cfg_daily_search_time">每日搜索时间（本机时间）</label>
+            <input id="cfg_daily_search_time" type="time" value="09:00">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
             <label>排除岗位标题关键词（逗号分隔）</label>
             <input id="cfg_excluded_titles" placeholder="例如：内容审核，兼职，暖通">
             <div style="font-size:12px;color:var(--text2)">标题含这些词的岗位直接跳过，不进入 AI 评分。</div>
@@ -302,6 +315,13 @@
           <div class="form-group">
             <label>短期天数</label>
             <input id="cfg_blacklist_days" type="number" value="30" min="1" max="365">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="width:100%">
+            <label for="cfg_outsourcing_keywords">外包预筛关键词（逗号分隔）</label>
+            <input id="cfg_outsourcing_keywords" type="text" placeholder="劳务派遣，劳务外包，外包，驻场">
+            <div style="font-size:12px;color:var(--text2)">命中后会直接拉黑岗位；宽泛词如“外包”“驻场”可按需要删掉。</div>
           </div>
         </div>
         <div class="form-row" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
@@ -411,6 +431,7 @@
         &nbsp;|&nbsp; 需人工核对：<span id="statManualApprovals">0</span>
         &nbsp;|&nbsp; 待发 PDF：<span id="statResumePending">0</span>
         &nbsp;|&nbsp; 待完成会话：<span id="statWorkflowPending">0</span>
+        &nbsp;|&nbsp; 需核对：<span id="statNeedsAttention">0</span>
       </div>
       <div id="cityIncomplete" style="display:none;margin-top:8px;font-size:12px;color:var(--text2)"></div>
     </div>
@@ -592,12 +613,25 @@ async function saveConfig() {
     regions.push({ city, min_k:minK, max_k:maxK });
   }
   if (!regions.length) { showToast('请至少添加一个搜索地区', 'error'); return; }
+  if (document.getElementById('cfg_daily_search').checked &&
+      !document.getElementById('cfg_daily_search_time').value) {
+    showToast('请选择每天自动搜索的时间', 'error');
+    return;
+  }
+  const outsourcingKeywords = document.getElementById('cfg_outsourcing_keywords').value
+    .split(/[,，]/).map(s => s.trim()).filter(Boolean);
+  if (document.getElementById('cfg_blacklist_enabled').checked && !outsourcingKeywords.length) {
+    showToast('自动拉黑开启时请填写至少一个外包关键词', 'error');
+    return;
+  }
   const conf = {
     search: {
       keyword: document.getElementById('cfg_keyword').value.trim(),
       secondary_keywords: document.getElementById('cfg_secondary').value.split(/[,，]/).map(s => s.trim()).filter(Boolean),
       city: regions.map(r => r.city).join('，'),
       page_count: parseInt(document.getElementById('cfg_pages').value) || 5,
+      daily_search_time: document.getElementById('cfg_daily_search').checked
+        ? document.getElementById('cfg_daily_search_time').value : '',
       salary_ranges_by_city: regions,
       salary_floor_by_city: {},
       excluded_title_keywords: document.getElementById('cfg_excluded_titles').value.split(/[,，]/).map(s => s.trim()).filter(Boolean),
@@ -619,8 +653,9 @@ async function saveConfig() {
     },
     blacklist: {
       enabled: document.getElementById('cfg_blacklist_enabled').checked,
-      auto_threshold: parseInt(document.getElementById('cfg_blacklist_thr').value) || 30,
+      auto_threshold: Number(document.getElementById('cfg_blacklist_thr').value),
       temp_days: parseInt(document.getElementById('cfg_blacklist_days').value) || 30,
+      outsourcing_keywords: outsourcingKeywords,
     },
   };
   const button = document.getElementById('saveConfigButton');
@@ -637,11 +672,13 @@ async function saveConfig() {
       const check = await fetch('/api/config', { cache:'no-store' });
       if (!check.ok) throw new Error('保存后读取失败');
       const saved = await check.json();
-      if (JSON.stringify(saved.search?.salary_ranges_by_city || []) !== JSON.stringify(regions)) {
+      if (JSON.stringify(saved.search?.salary_ranges_by_city || []) !== JSON.stringify(regions) ||
+          (saved.search?.daily_search_time ?? '09:00') !== conf.search.daily_search_time ||
+          JSON.stringify(saved.blacklist?.outsourcing_keywords || []) !== JSON.stringify(outsourcingKeywords)) {
         throw new Error('保存后配置与页面不一致');
       }
       document.getElementById('configSaveState').textContent =
-        `已保存并核对 · ${new Date().toLocaleTimeString()} · 搜索城市下次启动生效`;
+        `已保存并核对 · ${new Date().toLocaleTimeString()} · 搜索城市和页数下次搜索生效`;
       showToast('✅ 配置已保存并核对', 'success');
     } else {
       document.getElementById('configSaveState').textContent = '保存失败：' + (d.error || '未知错误');
@@ -717,6 +754,7 @@ function updateStatus(payload) {
   document.getElementById('statResumes').textContent = submission.resumes_sent || 0;
   document.getElementById('statResumePending').textContent = submission.pending_resumes || 0;
   document.getElementById('statWorkflowPending').textContent = submission.pending_workflows || 0;
+  document.getElementById('statNeedsAttention').textContent = submission.needs_attention || 0;
   document.getElementById('statSkipped').textContent = stats.skipped || 0;
   document.getElementById('statFailed').textContent = stats.failed || 0;
   document.getElementById('statElapsed').textContent = payload.elapsed || '0秒';
@@ -736,6 +774,13 @@ function updateStatus(payload) {
     accountEl.title = '';
     accountEl.classList.add('account-pending');
   }
+  const ai = payload.ai_connection;
+  const aiEl = document.getElementById('aiInfo');
+  if (!ai) aiEl.textContent = '🤖 AI：等待初始化';
+  else if (!ai.ready) aiEl.textContent = '🤖 AI：未就绪，请查看日志';
+  else if (ai.last_request_ok === false) aiEl.textContent = '🤖 AI：最近一次调用失败，岗位会重试；请检查网络与代理';
+  else if (ai.last_request_ok === true) aiEl.textContent = `🤖 AI：最近一次调用成功 · ${String(ai.last_request_at || '').replace('T', ' ')}${ai.proxy_configured ? ' · 已使用代理' : ''}`;
+  else aiEl.textContent = `🤖 AI：已初始化，等待首次评分${ai.proxy_configured ? ' · 已使用代理' : ''}`;
   const incompleteEl = document.getElementById('cityIncomplete');
   const incomplete = payload.incomplete_cities || [];
   incompleteEl.style.display = incomplete.length ? 'block' : 'none';
@@ -774,6 +819,9 @@ function updateStatus(payload) {
         kw.value = c.search.keyword || '';
         loadRegionRows(c.search);
         document.getElementById('cfg_pages').value = c.search.page_count || 5;
+        const dailyTime = c.search.daily_search_time === undefined ? '09:00' : c.search.daily_search_time;
+        document.getElementById('cfg_daily_search').checked = !!dailyTime;
+        document.getElementById('cfg_daily_search_time').value = dailyTime || '09:00';
         document.getElementById('cfg_excluded_titles').value = (c.search.excluded_title_keywords || []).join('，');
         if (c.search.secondary_keywords) {
           document.getElementById('cfg_secondary').value = c.search.secondary_keywords.join(',');
@@ -826,6 +874,11 @@ function updateStatus(payload) {
       if (!blDays.dataset.loaded) {
         blDays.value = bl.temp_days || 30;
         blDays.dataset.loaded = '1';
+      }
+      const blKeywords = document.getElementById('cfg_outsourcing_keywords');
+      if (!blKeywords.dataset.loaded) {
+        blKeywords.value = (bl.outsourcing_keywords || []).join('，');
+        blKeywords.dataset.loaded = '1';
       }
     }
   }
