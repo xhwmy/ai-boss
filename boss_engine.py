@@ -742,9 +742,16 @@ class BossEngine:
                 review_count = len(self._pending_reviews)
             if not resume_count and not review_count and self._review_queue.empty() and not daily_time:
                 return
-            next_search = (f"；下次搜索 {daily_time}" if daily_time else "")
-            self._set_status(self.RUNNING,
-                             f"等待后续处理：待审核 {review_count}，待完成会话 {resume_count}{next_search}")
+            if daily_time:
+                next_day = max(now.date(), self._last_search_day + timedelta(days=1))
+                next_search = f"；下次搜索 {next_day.isoformat()} {daily_time}"
+            else:
+                next_search = ""
+            self._set_status(
+                self.RUNNING,
+                f"今日搜索已完成；每 5 分钟核查待完成会话 {resume_count} 条"
+                f"；待审核 {review_count} 条{next_search}",
+            )
             self._stop_event.wait(2)
 
     def _main_loop(self, city_code="", city_name="不限", page_limit=None):
